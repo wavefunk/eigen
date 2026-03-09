@@ -14,6 +14,11 @@ pub struct SiteConfig {
     pub assets: AssetsConfig,
     #[serde(default)]
     pub sources: HashMap<String, SourceConfig>,
+    /// Plugin configuration tables.  Each key is a plugin name with its
+    /// plugin-specific TOML table.  Stored as raw `toml::Value` so plugins
+    /// can parse their own config.
+    #[serde(default)]
+    pub plugins: HashMap<String, toml::Value>,
 }
 
 /// Metadata about the site itself.
@@ -288,5 +293,73 @@ base_url = ""
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("site.toml"));
+    }
+
+    // --- Plugin config tests ---
+
+    #[test]
+    fn test_parse_config_with_plugins() {
+        let toml_str = r#"
+[site]
+name = "Plugin Test"
+base_url = "https://example.com"
+
+[plugins.strapi]
+sources = ["cms"]
+media_base_url = "http://localhost:1337"
+"#;
+        let config = parse_toml(toml_str).unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        assert!(config.plugins.contains_key("strapi"));
+
+        // Verify the raw TOML values are accessible.
+        let strapi = config.plugins.get("strapi").unwrap();
+        assert_eq!(
+            strapi.get("media_base_url").unwrap().as_str().unwrap(),
+            "http://localhost:1337"
+        );
+    }
+
+    #[test]
+    fn test_parse_config_without_plugins() {
+        let toml_str = r#"
+[site]
+name = "No Plugins"
+base_url = "https://example.com"
+"#;
+        let config = parse_toml(toml_str).unwrap();
+        assert!(config.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_parse_config_empty_plugins() {
+        let toml_str = r#"
+[site]
+name = "Empty Plugins"
+base_url = "https://example.com"
+
+[plugins]
+"#;
+        let config = parse_toml(toml_str).unwrap();
+        assert!(config.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_parse_config_custom_plugin_name() {
+        // Unknown plugin names should parse fine — they're just TOML tables.
+        let toml_str = r#"
+[site]
+name = "Custom Plugin"
+base_url = "https://example.com"
+
+[plugins.my_custom_plugin]
+option1 = "value1"
+option2 = 42
+"#;
+        let config = parse_toml(toml_str).unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        let custom = config.plugins.get("my_custom_plugin").unwrap();
+        assert_eq!(custom.get("option1").unwrap().as_str().unwrap(), "value1");
+        assert_eq!(custom.get("option2").unwrap().as_integer().unwrap(), 42);
     }
 }

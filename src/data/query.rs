@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::frontmatter::{DataQuery, Frontmatter};
+use crate::plugins::registry::PluginRegistry;
 
 use super::fetcher::DataFetcher;
 
@@ -23,12 +24,13 @@ use super::fetcher::DataFetcher;
 pub fn resolve_page_data(
     frontmatter: &Frontmatter,
     fetcher: &mut DataFetcher,
+    plugin_registry: Option<&PluginRegistry>,
 ) -> Result<HashMap<String, Value>> {
     let mut result = HashMap::new();
 
     for (name, query) in &frontmatter.data {
         let value = fetcher
-            .fetch(query)
+            .fetch(query, plugin_registry)
             .wrap_err_with(|| format!("Failed to resolve data query '{}'", name))?;
         result.insert(name.clone(), value);
     }
@@ -47,6 +49,7 @@ pub fn resolve_page_data(
 pub fn resolve_dynamic_page_data(
     frontmatter: &Frontmatter,
     fetcher: &mut DataFetcher,
+    plugin_registry: Option<&PluginRegistry>,
 ) -> Result<Vec<Value>> {
     let collection_query = frontmatter
         .collection
@@ -54,7 +57,7 @@ pub fn resolve_dynamic_page_data(
         .ok_or_else(|| eyre::eyre!("Dynamic page has no `collection` in frontmatter"))?;
 
     let collection = fetcher
-        .fetch(collection_query)
+        .fetch(collection_query, plugin_registry)
         .wrap_err("Failed to fetch collection")?;
 
     match collection {
@@ -76,6 +79,7 @@ pub fn resolve_item_data(
     item: &Value,
     item_as: &str,
     fetcher: &mut DataFetcher,
+    plugin_registry: Option<&PluginRegistry>,
 ) -> Result<HashMap<String, Value>> {
     let mut result = HashMap::new();
 
@@ -92,7 +96,7 @@ pub fn resolve_item_data(
         verify_no_remaining_interpolation(&interpolated, name)?;
 
         let value = fetcher
-            .fetch(&interpolated)
+            .fetch(&interpolated, plugin_registry)
             .wrap_err_with(|| format!("Failed to resolve data query '{}'", name))?;
         result.insert(name.clone(), value);
     }
@@ -107,8 +111,9 @@ pub fn resolve_dynamic_page_data_for_item(
     frontmatter: &Frontmatter,
     item: &Value,
     fetcher: &mut DataFetcher,
+    plugin_registry: Option<&PluginRegistry>,
 ) -> Result<HashMap<String, Value>> {
-    resolve_item_data(frontmatter, item, &frontmatter.item_as, fetcher)
+    resolve_item_data(frontmatter, item, &frontmatter.item_as, fetcher, plugin_registry)
 }
 
 /// Interpolate `{{ item_as.field }}` patterns in a DataQuery's filter values.
@@ -457,7 +462,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = resolve_page_data(&fm, &mut fetcher).unwrap();
+        let result = resolve_page_data(&fm, &mut fetcher, None).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result["nav"].is_array());
     }
@@ -492,7 +497,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = resolve_page_data(&fm, &mut fetcher).unwrap();
+        let result = resolve_page_data(&fm, &mut fetcher, None).unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.contains_key("nav"));
         assert!(result.contains_key("config"));
@@ -505,7 +510,7 @@ mod tests {
         let mut fetcher = DataFetcher::new(&HashMap::new(), root);
         let fm = Frontmatter::default();
 
-        let result = resolve_page_data(&fm, &mut fetcher).unwrap();
+        let result = resolve_page_data(&fm, &mut fetcher, None).unwrap();
         assert!(result.is_empty());
     }
 
@@ -530,7 +535,7 @@ mod tests {
             ..Default::default()
         };
 
-        let items = resolve_dynamic_page_data(&fm, &mut fetcher).unwrap();
+        let items = resolve_dynamic_page_data(&fm, &mut fetcher, None).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["title"], "First");
     }
@@ -542,7 +547,7 @@ mod tests {
         let mut fetcher = DataFetcher::new(&HashMap::new(), root);
         let fm = Frontmatter::default();
 
-        let result = resolve_dynamic_page_data(&fm, &mut fetcher);
+        let result = resolve_dynamic_page_data(&fm, &mut fetcher, None);
         assert!(result.is_err());
     }
 
@@ -582,7 +587,7 @@ mod tests {
         };
 
         let item = json!({"author_id": 2, "title": "My Post"});
-        let result = resolve_item_data(&fm, &item, "post", &mut fetcher).unwrap();
+        let result = resolve_item_data(&fm, &item, "post", &mut fetcher, None).unwrap();
 
         assert_eq!(result.len(), 1);
         let authors = result["author"].as_array().unwrap();
@@ -615,7 +620,163 @@ mod tests {
         };
 
         let item = json!({"id": 1});
-        let result = resolve_item_data(&fm, &item, "post", &mut fetcher).unwrap();
+        let result = resolve_item_data(&fm, &item, "post", &mut fetcher, None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result["sidebar"].is_array());
+    }
+
+    // --- Plugin registry integration tests ---
+
+    #[test]
+    fn test_resolve_page_data_with_plugin_registry() {
+        use crate::plugins::Plugin;
+        use crate::plugins::registry::PluginRegistry;
+
+        #[derive(Debug)]
+        struct TagPlugin;
+
+        impl Plugin for TagPlugin {
+            fn name(&self) -> &str { "tag" }
+
+            fn transform_data(
+                &self,
+                mut value: serde_json::Value,
+                _source: Option<&str>,
+                _path: Option<&str>,
+            ) -> eyre::Result<serde_json::Value> {
+                if let serde_json::Value::Array(ref mut arr) = value {
+                    for item in arr.iter_mut() {
+                        if let Some(obj) = item.as_object_mut() {
+                            obj.insert("tagged".into(), json!(true));
+                        }
+                    }
+                }
+                Ok(value)
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "_data/items.json", r#"[{"id": 1}, {"id": 2}]"#);
+
+        let mut fetcher = DataFetcher::new(&HashMap::new(), root);
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(TagPlugin));
+
+        let fm = Frontmatter {
+            data: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "items".into(),
+                    DataQuery {
+                        file: Some("items.json".into()),
+                        ..Default::default()
+                    },
+                );
+                m
+            },
+            ..Default::default()
+        };
+
+        let result = resolve_page_data(&fm, &mut fetcher, Some(&registry)).unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert!(items[0]["tagged"].as_bool().unwrap());
+        assert!(items[1]["tagged"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_dynamic_page_data_with_plugin_registry() {
+        use crate::plugins::Plugin;
+        use crate::plugins::registry::PluginRegistry;
+
+        #[derive(Debug)]
+        struct EnrichPlugin;
+
+        impl Plugin for EnrichPlugin {
+            fn name(&self) -> &str { "enrich" }
+
+            fn transform_data(
+                &self,
+                mut value: serde_json::Value,
+                _source: Option<&str>,
+                _path: Option<&str>,
+            ) -> eyre::Result<serde_json::Value> {
+                if let serde_json::Value::Array(ref mut arr) = value {
+                    for item in arr.iter_mut() {
+                        if let Some(obj) = item.as_object_mut() {
+                            obj.insert("enriched".into(), json!(true));
+                        }
+                    }
+                }
+                Ok(value)
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "_data/posts.json",
+            r#"[{"slug": "a", "title": "A"}, {"slug": "b", "title": "B"}]"#,
+        );
+
+        let mut fetcher = DataFetcher::new(&HashMap::new(), root);
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(EnrichPlugin));
+
+        let fm = Frontmatter {
+            collection: Some(DataQuery {
+                file: Some("posts.json".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let items = resolve_dynamic_page_data(&fm, &mut fetcher, Some(&registry)).unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(items[0]["enriched"].as_bool().unwrap());
+        assert!(items[1]["enriched"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_dynamic_page_data_for_item_with_plugin() {
+        use crate::plugins::Plugin;
+        use crate::plugins::registry::PluginRegistry;
+
+        #[derive(Debug)]
+        struct PassthroughPlugin;
+
+        impl Plugin for PassthroughPlugin {
+            fn name(&self) -> &str { "passthrough" }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "_data/sidebar.yaml", "- widget: recent\n");
+
+        let mut fetcher = DataFetcher::new(&HashMap::new(), root);
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(PassthroughPlugin));
+
+        let fm = Frontmatter {
+            item_as: "post".into(),
+            data: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "sidebar".into(),
+                    DataQuery {
+                        file: Some("sidebar.yaml".into()),
+                        ..Default::default()
+                    },
+                );
+                m
+            },
+            ..Default::default()
+        };
+
+        let item = json!({"id": 1, "title": "Test"});
+        let result =
+            resolve_dynamic_page_data_for_item(&fm, &item, &mut fetcher, Some(&registry)).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result["sidebar"].is_array());
     }

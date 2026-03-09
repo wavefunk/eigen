@@ -96,6 +96,7 @@ mod tests {
             build: BuildConfig::default(),
             assets: Default::default(),
             sources: HashMap::new(),
+            plugins: HashMap::new(),
         }
     }
 

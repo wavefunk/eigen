@@ -19,6 +19,7 @@ use crate::assets::cache::AssetCache;
 use crate::config::SiteConfig;
 use crate::data::{self, DataFetcher};
 use crate::discovery::{self, PageDef, PageType};
+use crate::plugins::registry::{self, PluginRegistry};
 use crate::template;
 use crate::build::render::RenderedPage;
 
@@ -35,6 +36,8 @@ pub struct DevBuildState {
     prev_frontmatter: HashMap<PathBuf, String>,
     /// Data fetcher with URL cache that persists across rebuilds.
     fetcher: DataFetcher,
+    /// Plugin registry.
+    plugin_registry: PluginRegistry,
     /// Asset cache for localized remote assets.
     asset_cache: AssetCache,
     /// HTTP client for asset downloads.
@@ -46,6 +49,7 @@ impl DevBuildState {
     pub fn new(project_root: &Path) -> Result<Self> {
         let config = crate::config::load_config(project_root)?;
         let fetcher = DataFetcher::new(&config.sources, project_root);
+        let plugin_registry = registry::build_registry(&config.plugins, project_root)?;
         let asset_cache = AssetCache::open(project_root)
             .wrap_err("Failed to open asset cache")?;
         let asset_client = reqwest::blocking::Client::new();
@@ -55,6 +59,7 @@ impl DevBuildState {
             config,
             prev_frontmatter: HashMap::new(),
             fetcher,
+            plugin_registry,
             asset_cache,
             asset_client,
         };
@@ -70,9 +75,10 @@ impl DevBuildState {
         match scope {
             RebuildScope::Full => {
                 tracing::info!("Full rebuild (config changed)...");
-                // Reload config.
+                // Reload config and plugins.
                 self.config = crate::config::load_config(&self.project_root)?;
                 self.fetcher = DataFetcher::new(&self.config.sources, &self.project_root);
+                self.plugin_registry = registry::build_registry(&self.config.plugins, &self.project_root)?;
                 self.full_build()?;
             }
             RebuildScope::DataOnly => {
@@ -131,8 +137,8 @@ impl DevBuildState {
         )?;
         crate::build::output::copy_static_assets(project_root)?;
 
-        // Set up template engine.
-        let env = template::setup_environment(project_root, config, &pages)?;
+        // Set up template engine (with plugin extensions).
+        let env = template::setup_environment(project_root, config, &pages, Some(&self.plugin_registry))?;
 
         // Build timestamp.
         let build_time =
@@ -163,6 +169,7 @@ impl DevBuildState {
                         &build_time,
                         &mut self.asset_cache,
                         &self.asset_client,
+                        &self.plugin_registry,
                     )?;
                     rendered_pages.push(result);
                 }
@@ -177,6 +184,7 @@ impl DevBuildState {
                         &build_time,
                         &mut self.asset_cache,
                         &self.asset_client,
+                        &self.plugin_registry,
                     )?;
                     rendered_pages.extend(results);
                 }
@@ -192,6 +200,9 @@ impl DevBuildState {
         )?;
 
         self.prev_frontmatter = new_frontmatter;
+
+        // Run post-build plugin hooks.
+        self.plugin_registry.post_build(&dist_dir, project_root)?;
 
         tracing::info!("Dev build: {} page(s).", rendered_pages.len());
         Ok(())
@@ -209,6 +220,7 @@ fn render_static_page_dev(
     build_time: &str,
     asset_cache: &mut AssetCache,
     asset_client: &reqwest::blocking::Client,
+    plugin_registry: &PluginRegistry,
 ) -> Result<RenderedPage> {
     use crate::build::context::{self, PageMeta};
     use crate::build::fragments;
@@ -216,7 +228,7 @@ fn render_static_page_dev(
     let tmpl_name = page.template_path.to_string_lossy().to_string();
 
     // Resolve data queries.
-    let page_data = data::resolve_page_data(&page.frontmatter, fetcher)
+    let page_data = data::resolve_page_data(&page.frontmatter, fetcher, Some(plugin_registry))
         .wrap_err_with(|| format!("Failed to resolve data for {}", tmpl_name))?;
 
     // Compute output path.
@@ -248,7 +260,7 @@ fn render_static_page_dev(
         .render(&ctx)
         .wrap_err_with(|| format!("Failed to render '{}'", tmpl_name))?;
 
-    // Strip markers, localize assets, and inject reload script.
+    // Strip markers, localize assets, run plugins, and inject reload script.
     let full_html = fragments::strip_fragment_markers(&rendered);
     let full_html = assets::localize_assets(
         &full_html,
@@ -257,6 +269,11 @@ fn render_static_page_dev(
         asset_client,
         dist_dir,
     ).wrap_err_with(|| format!("Failed to localize assets for '{}'", tmpl_name))?;
+    let full_html = plugin_registry.post_render_html(
+        full_html,
+        &url_path,
+        dist_dir,
+    )?;
     let full_html = inject::inject_reload_script(&full_html);
 
     let full_path = dist_dir.join(&output_path);
@@ -311,6 +328,7 @@ fn render_dynamic_page_dev(
     build_time: &str,
     asset_cache: &mut AssetCache,
     asset_client: &reqwest::blocking::Client,
+    plugin_registry: &PluginRegistry,
 ) -> Result<Vec<RenderedPage>> {
     use crate::build::context::{self, PageMeta};
     use crate::build::fragments;
@@ -321,7 +339,7 @@ fn render_dynamic_page_dev(
     let slug_field = &page.frontmatter.slug_field;
 
     // Fetch collection.
-    let items = data::resolve_dynamic_page_data(&page.frontmatter, fetcher)
+    let items = data::resolve_dynamic_page_data(&page.frontmatter, fetcher, Some(plugin_registry))
         .wrap_err_with(|| format!("Failed to fetch collection for {}", tmpl_name))?;
 
     if items.is_empty() {
@@ -359,7 +377,7 @@ fn render_dynamic_page_dev(
 
         // Resolve nested data.
         let item_data =
-            data::resolve_dynamic_page_data_for_item(&page.frontmatter, item, fetcher)?;
+            data::resolve_dynamic_page_data_for_item(&page.frontmatter, item, fetcher, Some(plugin_registry))?;
 
         let output_path = page.output_dir.join(format!("{}.html", slug));
         let url_path = format!("/{}", output_path.to_string_lossy().replace('\\', "/"));
@@ -382,7 +400,7 @@ fn render_dynamic_page_dev(
             format!("Failed to render '{}' for slug '{}'", tmpl_name, slug)
         })?;
 
-        // Strip markers, localize assets, and inject reload script.
+        // Strip markers, localize assets, run plugins, and inject reload script.
         let full_html = fragments::strip_fragment_markers(&rendered);
         let full_html = assets::localize_assets(
             &full_html,
@@ -393,6 +411,11 @@ fn render_dynamic_page_dev(
         ).wrap_err_with(|| {
             format!("Failed to localize assets for '{}' slug '{}'", tmpl_name, slug)
         })?;
+        let full_html = plugin_registry.post_render_html(
+            full_html,
+            &url_path,
+            dist_dir,
+        )?;
         let full_html = inject::inject_reload_script(&full_html);
 
         let full_path = dist_dir.join(&output_path);

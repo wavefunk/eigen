@@ -15,6 +15,7 @@ use walkdir::WalkDir;
 
 use crate::config::SiteConfig;
 use crate::discovery::PageDef;
+use crate::plugins::registry::PluginRegistry;
 
 use super::filters;
 use super::functions;
@@ -26,10 +27,12 @@ use super::preprocessing;
 /// - Loads all `_`-prefixed layout/partial templates from `templates/`.
 /// - Applies fragment marker preprocessing if fragments are enabled.
 /// - Registers custom filters and functions.
+/// - Lets plugins register their own template extensions.
 pub fn setup_environment(
     project_root: &Path,
     config: &SiteConfig,
     pages: &[PageDef],
+    plugin_registry: Option<&PluginRegistry>,
 ) -> Result<Environment<'static>> {
     let mut env = Environment::new();
 
@@ -84,6 +87,11 @@ pub fn setup_environment(
 
     // 5. Register custom functions.
     functions::register_functions(&mut env, config);
+
+    // 6. Let plugins register their own filters/functions/globals.
+    if let Some(registry) = plugin_registry {
+        registry.register_template_extensions(&mut env)?;
+    }
 
     Ok(env)
 }
@@ -172,6 +180,7 @@ mod tests {
             },
             assets: Default::default(),
             sources: HashMap::new(),
+            plugins: HashMap::new(),
         }
     }
 
@@ -220,7 +229,7 @@ mod tests {
             template_body: r#"{% extends "_base.html" %}{% block content %}<h1>Hi</h1>{% endblock %}"#.into(),
         }];
 
-        let env = setup_environment(root, &config, &pages).unwrap();
+        let env = setup_environment(root, &config, &pages, None).unwrap();
 
         // Verify template is registered and can render.
         let tmpl = env.get_template("index.html").unwrap();
@@ -248,9 +257,77 @@ mod tests {
             template_body: "<h1>{{ undefined_var }}</h1>".into(),
         }];
 
-        let env = setup_environment(root, &config, &pages).unwrap();
+        let env = setup_environment(root, &config, &pages, None).unwrap();
         let tmpl = env.get_template("test.html").unwrap();
         let result = tmpl.render(minijinja::context! {});
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_setup_environment_with_plugin_registry() {
+        use crate::plugins::Plugin;
+        use crate::plugins::registry::PluginRegistry;
+
+        #[derive(Debug)]
+        struct TestPlugin;
+
+        impl Plugin for TestPlugin {
+            fn name(&self) -> &str { "test_ext" }
+
+            fn register_template_extensions(
+                &self,
+                env: &mut Environment<'_>,
+            ) -> eyre::Result<()> {
+                env.add_function("plugin_hello", || -> String {
+                    "hello from plugin".to_string()
+                });
+                Ok(())
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("templates")).unwrap();
+
+        let config = test_config();
+
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(TestPlugin));
+
+        let pages = vec![PageDef {
+            template_path: PathBuf::from("test.html"),
+            page_type: PageType::Static,
+            output_dir: PathBuf::from(""),
+            frontmatter: Frontmatter::default(),
+            template_body: "{{ plugin_hello() }}".into(),
+        }];
+
+        let env = setup_environment(root, &config, &pages, Some(&registry)).unwrap();
+        let tmpl = env.get_template("test.html").unwrap();
+        let result = tmpl.render(minijinja::context! {}).unwrap();
+        assert_eq!(result, "hello from plugin");
+    }
+
+    #[test]
+    fn test_setup_environment_without_plugin_registry() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("templates")).unwrap();
+
+        let config = test_config();
+
+        let pages = vec![PageDef {
+            template_path: PathBuf::from("test.html"),
+            page_type: PageType::Static,
+            output_dir: PathBuf::from(""),
+            frontmatter: Frontmatter::default(),
+            template_body: "<h1>No plugins</h1>".into(),
+        }];
+
+        // Passing None for plugin_registry should work fine.
+        let env = setup_environment(root, &config, &pages, None).unwrap();
+        let tmpl = env.get_template("test.html").unwrap();
+        let result = tmpl.render(minijinja::context! {}).unwrap();
+        assert_eq!(result, "<h1>No plugins</h1>");
     }
 }

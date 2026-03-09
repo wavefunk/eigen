@@ -11,6 +11,7 @@ pub mod dev;
 pub mod discovery;
 pub mod frontmatter;
 pub mod init;
+pub mod plugins;
 pub mod template;
 
 /// Re-export the live-reload injection function for integration testing.

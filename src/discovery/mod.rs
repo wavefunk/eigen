@@ -224,6 +224,7 @@ mod tests {
             build: BuildConfig::default(),
             assets: Default::default(),
             sources,
+            plugins: HashMap::new(),
         }
     }
 

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::SourceConfig;
 use crate::frontmatter::DataQuery;
+use crate::plugins::registry::PluginRegistry;
 
 use super::transforms::apply_transforms;
 
@@ -41,8 +42,16 @@ impl DataFetcher {
     ///
     /// The query may reference a local file (`file` field) or a remote source
     /// (`source` + `path` fields). After fetching the raw data, `root`
-    /// extraction and transforms (filter, sort, limit) are applied.
-    pub fn fetch(&mut self, query: &DataQuery) -> Result<Value> {
+    /// extraction, plugin transforms, and transforms (filter, sort, limit)
+    /// are applied.
+    pub fn fetch(
+        &mut self,
+        query: &DataQuery,
+        plugin_registry: Option<&PluginRegistry>,
+    ) -> Result<Value> {
+        let source_name = query.source.as_deref();
+        let query_path = query.path.as_deref();
+
         let raw = if let Some(ref file) = query.file {
             self.fetch_file(file)?
         } else if let Some(ref source_name) = query.source {
@@ -61,8 +70,15 @@ impl DataFetcher {
             raw
         };
 
+        // Apply plugin data transforms (e.g., Strapi flattening).
+        let transformed = if let Some(registry) = plugin_registry {
+            registry.transform_data(extracted, source_name, query_path)?
+        } else {
+            extracted
+        };
+
         // Apply transforms: filter → sort → limit.
-        let result = apply_transforms(extracted, &query.filter, &query.sort, &query.limit);
+        let result = apply_transforms(transformed, &query.filter, &query.sort, &query.limit);
 
         Ok(result)
     }
@@ -274,7 +290,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = fetcher.fetch(&query).unwrap();
+        let result = fetcher.fetch(&query, None).unwrap();
         assert!(result.is_array());
         assert_eq!(result.as_array().unwrap().len(), 1);
         assert_eq!(result[0]["label"], "Home");
@@ -292,7 +308,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = fetcher.fetch(&query).unwrap();
+        let result = fetcher.fetch(&query, None).unwrap();
         assert_eq!(result["debug"], true);
     }
 
@@ -313,7 +329,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = fetcher.fetch(&query).unwrap();
+        let result = fetcher.fetch(&query, None).unwrap();
         assert_eq!(result, json!([1, 2, 3]));
     }
 
@@ -345,7 +361,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = fetcher.fetch(&query).unwrap();
+        let result = fetcher.fetch(&query, None).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["id"], 1);
@@ -365,11 +381,11 @@ mod tests {
         };
 
         // First fetch reads file.
-        let r1 = fetcher.fetch(&query).unwrap();
+        let r1 = fetcher.fetch(&query, None).unwrap();
 
         // Delete the file — cached result should still work.
         fs::remove_file(root.join("_data/nav.yaml")).unwrap();
-        let r2 = fetcher.fetch(&query).unwrap();
+        let r2 = fetcher.fetch(&query, None).unwrap();
 
         assert_eq!(r1, r2);
     }
@@ -386,7 +402,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = fetcher.fetch(&query);
+        let result = fetcher.fetch(&query, None);
         assert!(result.is_err());
     }
 
@@ -397,7 +413,7 @@ mod tests {
         let mut fetcher = test_fetcher(root);
         let query = DataQuery::default();
 
-        let result = fetcher.fetch(&query);
+        let result = fetcher.fetch(&query, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("neither"));
@@ -414,7 +430,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = fetcher.fetch(&query);
+        let result = fetcher.fetch(&query, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("nonexistent"));
@@ -432,7 +448,7 @@ mod tests {
             ..Default::default()
         };
 
-        let _ = fetcher.fetch(&query).unwrap();
+        let _ = fetcher.fetch(&query, None).unwrap();
         assert!(!fetcher.file_cache.is_empty());
 
         fetcher.clear_file_cache();
@@ -442,5 +458,182 @@ mod tests {
         assert!(!fetcher.url_cache.is_empty());
         fetcher.clear_url_cache();
         assert!(fetcher.url_cache.is_empty());
+    }
+
+    // --- Plugin integration tests ---
+
+    #[test]
+    fn test_fetch_with_plugin_registry_transforms_data() {
+        use crate::plugins::Plugin;
+        use crate::plugins::registry::PluginRegistry;
+
+        #[derive(Debug)]
+        struct AddFieldPlugin;
+
+        impl Plugin for AddFieldPlugin {
+            fn name(&self) -> &str { "add_field" }
+
+            fn transform_data(
+                &self,
+                mut value: serde_json::Value,
+                _source: Option<&str>,
+                _path: Option<&str>,
+            ) -> eyre::Result<serde_json::Value> {
+                if let serde_json::Value::Array(ref mut arr) = value {
+                    for item in arr.iter_mut() {
+                        if let Some(obj) = item.as_object_mut() {
+                            obj.insert("added".into(), json!(true));
+                        }
+                    }
+                }
+                Ok(value)
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "_data/items.json", r#"[{"id": 1}, {"id": 2}]"#);
+
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(AddFieldPlugin));
+
+        let mut fetcher = test_fetcher(root);
+        let query = DataQuery {
+            file: Some("items.json".into()),
+            ..Default::default()
+        };
+
+        let result = fetcher.fetch(&query, Some(&registry)).unwrap();
+        let arr = result.as_array().unwrap();
+        assert!(arr[0]["added"].as_bool().unwrap());
+        assert!(arr[1]["added"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_fetch_with_none_plugin_registry_no_transform() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "_data/items.json", r#"[{"id": 1}]"#);
+
+        let mut fetcher = test_fetcher(root);
+        let query = DataQuery {
+            file: Some("items.json".into()),
+            ..Default::default()
+        };
+
+        let result = fetcher.fetch(&query, None).unwrap();
+        let arr = result.as_array().unwrap();
+        // No "added" field since no plugin.
+        assert!(arr[0].get("added").is_none());
+        assert_eq!(arr[0]["id"], 1);
+    }
+
+    #[test]
+    fn test_fetch_plugin_runs_after_root_extraction() {
+        use crate::plugins::Plugin;
+        use crate::plugins::registry::PluginRegistry;
+
+        #[derive(Debug)]
+        struct CountPlugin;
+
+        impl Plugin for CountPlugin {
+            fn name(&self) -> &str { "count" }
+
+            fn transform_data(
+                &self,
+                value: serde_json::Value,
+                _source: Option<&str>,
+                _path: Option<&str>,
+            ) -> eyre::Result<serde_json::Value> {
+                // This should receive the root-extracted value (the array),
+                // NOT the full wrapper object.
+                if let serde_json::Value::Array(ref arr) = value {
+                    assert_eq!(arr.len(), 2, "Plugin should receive the extracted array");
+                }
+                Ok(value)
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "_data/response.json",
+            r#"{"data": [{"id": 1}, {"id": 2}]}"#,
+        );
+
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(CountPlugin));
+
+        let mut fetcher = test_fetcher(root);
+        let query = DataQuery {
+            file: Some("response.json".into()),
+            root: Some("data".into()),
+            ..Default::default()
+        };
+
+        let result = fetcher.fetch(&query, Some(&registry)).unwrap();
+        assert_eq!(result.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_fetch_plugin_runs_before_filter_sort_limit() {
+        use crate::plugins::Plugin;
+        use crate::plugins::registry::PluginRegistry;
+
+        /// Plugin that adds a "status" field to all items.
+        #[derive(Debug)]
+        struct StatusPlugin;
+
+        impl Plugin for StatusPlugin {
+            fn name(&self) -> &str { "status" }
+
+            fn transform_data(
+                &self,
+                mut value: serde_json::Value,
+                _source: Option<&str>,
+                _path: Option<&str>,
+            ) -> eyre::Result<serde_json::Value> {
+                if let serde_json::Value::Array(ref mut arr) = value {
+                    for item in arr.iter_mut() {
+                        if let Some(obj) = item.as_object_mut() {
+                            // Add status=published to all items.
+                            obj.insert("status".into(), json!("published"));
+                        }
+                    }
+                }
+                Ok(value)
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Items don't have a "status" field — the plugin adds it.
+        write(
+            root,
+            "_data/items.json",
+            r#"[{"id": 1}, {"id": 2}, {"id": 3}]"#,
+        );
+
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(StatusPlugin));
+
+        let mut filter = HashMap::new();
+        filter.insert("status".into(), "published".into());
+
+        let mut fetcher = test_fetcher(root);
+        let query = DataQuery {
+            file: Some("items.json".into()),
+            filter: Some(filter),
+            limit: Some(2),
+            ..Default::default()
+        };
+
+        // The plugin adds "status" = "published" to all items,
+        // then the filter keeps only those (all 3), then limit=2.
+        let result = fetcher.fetch(&query, Some(&registry)).unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["status"], "published");
     }
 }

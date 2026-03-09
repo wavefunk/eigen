@@ -7,6 +7,7 @@ mod dev;
 mod discovery;
 mod frontmatter;
 mod init;
+mod plugins;
 mod template;
 
 use clap::Parser;

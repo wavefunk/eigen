@@ -12,6 +12,7 @@ use crate::assets::cache::AssetCache;
 use crate::config::SiteConfig;
 use crate::data::{self, DataFetcher};
 use crate::discovery::{self, PageDef, PageType};
+use crate::plugins::registry::{self, PluginRegistry};
 use crate::template;
 
 use super::context::{self, PageMeta};
@@ -37,6 +38,15 @@ pub fn build(project_root: &Path) -> Result<()> {
     let config = crate::config::load_config(project_root)?;
     tracing::info!("Loading config... ✓ ({})", config.site.name);
 
+    // Initialize plugin registry.
+    let plugin_registry = registry::build_registry(&config.plugins, project_root)?;
+    if !plugin_registry.is_empty() {
+        tracing::info!(
+            "Plugins loaded: {}",
+            plugin_registry.plugin_names().join(", ")
+        );
+    }
+
     let global_data = data::load_global_data(project_root)?;
     tracing::info!("Loading global data ({} files)... ✓", global_data.len());
 
@@ -57,8 +67,8 @@ pub fn build(project_root: &Path) -> Result<()> {
     output::copy_static_assets(project_root)?;
     tracing::info!("Copying static assets... ✓");
 
-    // Set up template engine.
-    let env = template::setup_environment(project_root, &config, &pages)?;
+    // Set up template engine (with plugin extensions).
+    let env = template::setup_environment(project_root, &config, &pages, Some(&plugin_registry))?;
     tracing::debug!("Template engine configured.");
 
     // Data fetcher.
@@ -95,6 +105,7 @@ pub fn build(project_root: &Path) -> Result<()> {
                     &mut data_query_count,
                     &mut asset_cache,
                     &asset_client,
+                    &plugin_registry,
                 )?;
                 rendered_pages.push(result);
             }
@@ -111,6 +122,7 @@ pub fn build(project_root: &Path) -> Result<()> {
                     &mut data_query_count,
                     &mut asset_cache,
                     &asset_client,
+                    &plugin_registry,
                 )?;
                 rendered_pages.extend(results);
             }
@@ -120,6 +132,9 @@ pub fn build(project_root: &Path) -> Result<()> {
     // Generate sitemap.
     sitemap::generate_sitemap(&dist_dir, &rendered_pages, &config, &build_time)?;
     tracing::info!("Generating sitemap... ✓");
+
+    // Run post-build hooks
+    plugin_registry.post_build(&dist_dir, project_root)?;
 
     tracing::info!(
         "Rendering pages... ✓ ({} pages, {} data queries)",
@@ -184,12 +199,13 @@ fn render_static_page(
     data_query_count: &mut u32,
     asset_cache: &mut AssetCache,
     asset_client: &reqwest::blocking::Client,
+    plugin_registry: &PluginRegistry,
 ) -> Result<RenderedPage> {
     let tmpl_name = page.template_path.to_string_lossy().to_string();
 
     // 1. Resolve data queries.
     *data_query_count += page.frontmatter.data.len() as u32;
-    let page_data = data::resolve_page_data(&page.frontmatter, fetcher)
+    let page_data = data::resolve_page_data(&page.frontmatter, fetcher, Some(plugin_registry))
         .wrap_err_with(|| format!("Failed to resolve data for template '{}'", tmpl_name))?;
 
     // Compute output path.
@@ -225,7 +241,7 @@ fn render_static_page(
     let rendered = tmpl.render(&ctx)
         .wrap_err_with(|| format!("Failed to render template '{}'", tmpl_name))?;
 
-    // 4. Write full page (with markers stripped, assets localized).
+    // 4. Write full page (with markers stripped, assets localized, plugins applied).
     let full_html = fragments::strip_fragment_markers(&rendered);
     let full_html = assets::localize_assets(
         &full_html,
@@ -234,6 +250,11 @@ fn render_static_page(
         asset_client,
         dist_dir,
     ).wrap_err_with(|| format!("Failed to localize assets for '{}'", tmpl_name))?;
+    let full_html = plugin_registry.post_render_html(
+        full_html,
+        &url_path,
+        dist_dir,
+    ).wrap_err_with(|| format!("Plugin post_render_html failed for '{}'", tmpl_name))?;
 
     let full_path = dist_dir.join(&output_path);
 
@@ -292,6 +313,7 @@ fn render_dynamic_page(
     data_query_count: &mut u32,
     asset_cache: &mut AssetCache,
     asset_client: &reqwest::blocking::Client,
+    plugin_registry: &PluginRegistry,
 ) -> Result<Vec<RenderedPage>> {
     let tmpl_name = page.template_path.to_string_lossy().to_string();
     let item_as = &page.frontmatter.item_as;
@@ -299,7 +321,7 @@ fn render_dynamic_page(
 
     // 1. Fetch collection.
     *data_query_count += 1;
-    let items = data::resolve_dynamic_page_data(&page.frontmatter, fetcher)
+    let items = data::resolve_dynamic_page_data(&page.frontmatter, fetcher, Some(plugin_registry))
         .wrap_err_with(|| format!("Failed to fetch collection for template '{}'", tmpl_name))?;
 
     if items.is_empty() {
@@ -367,6 +389,7 @@ fn render_dynamic_page(
             &page.frontmatter,
             item,
             fetcher,
+            Some(plugin_registry),
         )
         .wrap_err_with(|| {
             format!(
@@ -407,7 +430,7 @@ fn render_dynamic_page(
                 )
             })?;
 
-        // Write full page (with assets localized).
+        // Write full page (with assets localized, plugins applied).
         let full_html = fragments::strip_fragment_markers(&rendered);
         let full_html = assets::localize_assets(
             &full_html,
@@ -417,6 +440,13 @@ fn render_dynamic_page(
             dist_dir,
         ).wrap_err_with(|| {
             format!("Failed to localize assets for '{}' slug '{}'", tmpl_name, slug)
+        })?;
+        let full_html = plugin_registry.post_render_html(
+            full_html,
+            &url_path,
+            dist_dir,
+        ).wrap_err_with(|| {
+            format!("Plugin post_render_html failed for '{}' slug '{}'", tmpl_name, slug)
         })?;
 
         let full_path = dist_dir.join(&output_path);

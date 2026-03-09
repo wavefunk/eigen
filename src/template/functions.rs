@@ -114,6 +114,7 @@ mod tests {
             },
             assets: Default::default(),
             sources: HashMap::new(),
+            plugins: HashMap::new(),
         }
     }
 
@@ -129,6 +130,7 @@ mod tests {
             },
             assets: Default::default(),
             sources: HashMap::new(),
+            plugins: HashMap::new(),
         }
     }
 

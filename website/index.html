@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eigen — Static Site Generator with First-Class HTMX Support</title>
+<meta name="description" content="A fast, opinionated static site generator built in Rust. Generates full HTML pages and HTMX fragments side-by-side for seamless partial page loads.">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0f;--bg2:#111118;--bg3:#1a1a24;
+  --fg:#e2e2ea;--fg2:#9595a8;--fg3:#5c5c72;
+  --accent:#7c6cf0;--accent2:#a78bfa;--accent3:#5b4dc7;
+  --green:#34d399;--cyan:#22d3ee;--orange:#fb923c;--pink:#f472b6;
+  --mono:"SF Mono","Cascadia Code","Fira Code",Consolas,monospace;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --max:960px;
+}
+html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.65;overflow-x:hidden}
+a{color:var(--accent2);text-decoration:none;transition:color .2s}
+a:hover{color:var(--fg)}
+code{font-family:var(--mono);font-size:.875em}
+
+/* Utility */
+.container{max-width:var(--max);margin:0 auto;padding:0 24px}
+
+/* Animated gradient bg */
+@keyframes drift{
+  0%{background-position:0% 50%}
+  50%{background-position:100% 50%}
+  100%{background-position:0% 50%}
+}
+.hero-glow{
+  position:fixed;top:-40%;left:-20%;width:140%;height:120%;
+  background:radial-gradient(ellipse at 30% 20%,rgba(124,108,240,.08) 0%,transparent 60%),
+             radial-gradient(ellipse at 70% 80%,rgba(34,211,238,.05) 0%,transparent 50%);
+  pointer-events:none;z-index:0;animation:drift 20s ease-in-out infinite;
+  background-size:200% 200%;
+}
+
+/* NAV */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  background:rgba(10,10,15,.8);backdrop-filter:blur(16px);border-bottom:1px solid rgba(255,255,255,.05);
+}
+nav .inner{
+  max-width:var(--max);margin:0 auto;padding:14px 24px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+nav .logo{font-family:var(--mono);font-weight:700;font-size:1.1rem;color:var(--fg);letter-spacing:-.02em}
+nav .logo span{color:var(--accent)}
+nav .links{display:flex;gap:24px;align-items:center}
+nav .links a{color:var(--fg2);font-size:.875rem;transition:color .2s}
+nav .links a:hover{color:var(--fg)}
+.gh-btn{
+  display:inline-flex;align-items:center;gap:6px;padding:7px 14px;
+  background:var(--bg3);border:1px solid rgba(255,255,255,.08);border-radius:6px;
+  font-size:.8rem;color:var(--fg2)!important;transition:all .25s;
+}
+.gh-btn:hover{background:var(--accent3);color:#fff!important;border-color:var(--accent3)}
+.gh-btn svg{width:16px;height:16px;fill:currentColor}
+
+/* HERO */
+.hero{
+  position:relative;z-index:1;
+  padding:160px 0 100px;text-align:center;
+}
+.hero h1{
+  font-family:var(--mono);font-size:clamp(2.4rem,6vw,3.8rem);font-weight:800;
+  letter-spacing:-.04em;line-height:1.1;margin-bottom:20px;
+}
+.hero h1 .grad{
+  background:linear-gradient(135deg,var(--accent2),var(--cyan));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+}
+.hero .sub{
+  font-size:clamp(1rem,2.5vw,1.2rem);color:var(--fg2);max-width:600px;margin:0 auto 40px;line-height:1.6;
+}
+.hero-buttons{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;padding:12px 24px;border-radius:8px;
+  font-size:.95rem;font-weight:600;transition:all .25s;border:1px solid transparent;
+}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent2);color:#fff;transform:translateY(-1px);box-shadow:0 8px 30px rgba(124,108,240,.3)}
+.btn-secondary{background:transparent;border-color:rgba(255,255,255,.12);color:var(--fg2)}
+.btn-secondary:hover{border-color:var(--accent);color:var(--fg);transform:translateY(-1px)}
+
+/* Terminal demo */
+.terminal{
+  position:relative;z-index:1;max-width:640px;margin:60px auto 0;
+  background:var(--bg2);border:1px solid rgba(255,255,255,.06);border-radius:10px;
+  overflow:hidden;text-align:left;box-shadow:0 20px 60px rgba(0,0,0,.4);
+}
+.terminal-bar{
+  display:flex;gap:6px;padding:12px 16px;background:rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.05);
+}
+.terminal-bar i{width:10px;height:10px;border-radius:50%}
+.terminal-bar i:nth-child(1){background:#ff5f57}
+.terminal-bar i:nth-child(2){background:#ffbd2e}
+.terminal-bar i:nth-child(3){background:#28c840}
+.terminal-body{padding:20px;font-family:var(--mono);font-size:.85rem;line-height:1.8;overflow-x:auto}
+.terminal-body .prompt{color:var(--green)}
+.terminal-body .cmd{color:var(--fg)}
+.terminal-body .comment{color:var(--fg3)}
+.terminal-body .flag{color:var(--cyan)}
+.terminal-body .output{color:var(--fg2)}
+
+/* Typing animation */
+.typed-line{overflow:hidden;white-space:nowrap;width:0;display:inline-block;vertical-align:bottom}
+.typed-line.animate{animation:typeIn .6s steps(30) forwards}
+.typed-line.line2{animation-delay:.8s}
+.typed-line.line3{animation-delay:1.8s}
+@keyframes typeIn{from{width:0}to{width:100%}}
+.line-row{min-height:1.8em}
+
+/* FEATURES */
+.features{position:relative;z-index:1;padding:100px 0}
+.section-label{
+  font-family:var(--mono);font-size:.75rem;text-transform:uppercase;letter-spacing:.15em;
+  color:var(--accent);margin-bottom:12px;
+}
+.section-title{font-size:clamp(1.6rem,4vw,2.2rem);font-weight:700;letter-spacing:-.03em;margin-bottom:48px}
+.feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+.feature-card{
+  padding:28px;border-radius:10px;
+  background:var(--bg2);border:1px solid rgba(255,255,255,.05);
+  transition:all .3s;position:relative;overflow:hidden;
+}
+.feature-card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  opacity:0;transition:opacity .3s;
+}
+.feature-card:hover{border-color:rgba(124,108,240,.2);transform:translateY(-2px)}
+.feature-card:hover::before{opacity:1}
+.feature-icon{
+  width:40px;height:40px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  margin-bottom:16px;font-size:1.2rem;
+  background:rgba(124,108,240,.1);color:var(--accent2);
+}
+.feature-card h3{font-size:1.05rem;font-weight:600;margin-bottom:8px}
+.feature-card p{font-size:.9rem;color:var(--fg2);line-height:1.6}
+
+/* HOW IT WORKS */
+.how{position:relative;z-index:1;padding:80px 0 100px}
+.how-flow{display:flex;flex-direction:column;gap:0}
+.how-step{
+  display:grid;grid-template-columns:48px 1fr;gap:20px;
+  padding:24px 0;position:relative;
+}
+.how-step::before{
+  content:'';position:absolute;left:23px;top:0;bottom:0;width:1px;
+  background:rgba(255,255,255,.06);
+}
+.how-step:first-child::before{top:24px}
+.how-step:last-child::before{bottom:calc(100% - 48px)}
+.step-num{
+  width:48px;height:48px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--bg3);border:1px solid rgba(255,255,255,.08);
+  font-family:var(--mono);font-size:.85rem;font-weight:700;color:var(--accent2);
+  position:relative;z-index:1;
+}
+.step-content h3{font-size:1rem;font-weight:600;margin-bottom:4px}
+.step-content p{font-size:.9rem;color:var(--fg2)}
+
+/* CODE EXAMPLE */
+.code-section{position:relative;z-index:1;padding:0 0 100px}
+.code-tabs{display:flex;gap:2px;margin-bottom:0}
+.code-tab{
+  padding:10px 20px;font-family:var(--mono);font-size:.78rem;
+  background:var(--bg3);color:var(--fg3);border:none;cursor:pointer;
+  border-radius:8px 8px 0 0;transition:all .2s;
+}
+.code-tab.active{background:var(--bg2);color:var(--fg)}
+.code-block{
+  background:var(--bg2);border:1px solid rgba(255,255,255,.06);
+  border-radius:0 8px 8px 8px;padding:24px;overflow-x:auto;
+  font-family:var(--mono);font-size:.82rem;line-height:1.7;display:none;
+}
+.code-block.active{display:block}
+.code-block .kw{color:var(--pink)}
+.code-block .st{color:var(--green)}
+.code-block .cm{color:var(--fg3)}
+.code-block .fn{color:var(--cyan)}
+.code-block .tag{color:var(--orange)}
+.code-block .attr{color:var(--accent2)}
+.code-block .val{color:var(--green)}
+
+/* BENEFITS BAR */
+.benefits{position:relative;z-index:1;padding:80px 0;border-top:1px solid rgba(255,255,255,.04)}
+.benefits-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:32px;text-align:center}
+.benefit-stat{font-family:var(--mono);font-size:2rem;font-weight:800;color:var(--accent2)}
+.benefit-label{font-size:.85rem;color:var(--fg2);margin-top:4px}
+
+/* CTA */
+.cta{
+  position:relative;z-index:1;padding:100px 0;text-align:center;
+}
+.cta-box{
+  padding:60px 40px;border-radius:16px;
+  background:linear-gradient(135deg,rgba(124,108,240,.08),rgba(34,211,238,.05));
+  border:1px solid rgba(124,108,240,.15);
+}
+.cta-box h2{font-size:clamp(1.4rem,3vw,2rem);font-weight:700;margin-bottom:12px;letter-spacing:-.02em}
+.cta-box p{color:var(--fg2);margin-bottom:32px;font-size:1rem}
+.cta-buttons{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+
+/* FOOTER */
+footer{
+  position:relative;z-index:1;padding:40px 0;
+  border-top:1px solid rgba(255,255,255,.04);text-align:center;
+}
+footer p{font-size:.8rem;color:var(--fg3)}
+footer a{color:var(--fg2)}
+
+/* Fade-in on scroll */
+.reveal{opacity:0;transform:translateY(20px);transition:all .6s cubic-bezier(.23,1,.32,1)}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+/* Responsive */
+@media(max-width:640px){
+  .hero{padding:130px 0 60px}
+  .terminal{margin:40px 16px 0}
+  .feature-grid{grid-template-columns:1fr}
+  .how-step{grid-template-columns:36px 1fr;gap:14px}
+  .step-num{width:36px;height:36px;font-size:.75rem}
+  .how-step::before{left:17px}
+  nav .links a:not(.gh-btn){display:none}
+  .benefits-grid{grid-template-columns:repeat(2,1fr);gap:24px}
+}
+</style>
+</head>
+<body>
+
+<div class="hero-glow" aria-hidden="true"></div>
+
+<!-- NAV -->
+<nav>
+  <div class="inner">
+    <div class="logo"><span>λ</span> eigen</div>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#how">How It Works</a>
+      <a href="#code">Examples</a>
+      <a href="https://github.com/wavefunk/eigen" class="gh-btn" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="container">
+    <h1>Static sites with<br><span class="grad">first-class HTMX</span></h1>
+    <p class="sub">
+      Eigen is a fast, opinionated static site generator built in Rust.
+      It renders full HTML pages <em>and</em> HTMX fragments side-by-side —
+      seamless partial page loads, zero client-side framework required.
+    </p>
+    <div class="hero-buttons">
+      <a href="https://github.com/wavefunk/eigen" class="btn btn-primary" target="_blank" rel="noopener">
+        Get Started
+      </a>
+      <a href="#features" class="btn btn-secondary">Learn More ↓</a>
+    </div>
+  </div>
+
+  <!-- Terminal -->
+  <div class="terminal" role="img" aria-label="Terminal showing eigen commands">
+    <div class="terminal-bar"><i></i><i></i><i></i></div>
+    <div class="terminal-body">
+      <div class="line-row"><span class="prompt">❯ </span><span class="typed-line animate"><span class="cmd">eigen init</span> <span class="flag">my-site</span></span></div>
+      <div class="line-row"><span class="output" id="out1">  ✓ Scaffolded project in my-site/</span></div>
+      <div class="line-row"><span class="prompt">❯ </span><span class="typed-line animate line2"><span class="cmd">cd</span> <span class="flag">my-site</span> <span class="cmd">&& eigen dev</span></span></div>
+      <div class="line-row"><span class="output" id="out2">  ⚡ Dev server running at http://127.0.0.1:3000</span></div>
+      <div class="line-row"><span class="output" id="out3">  👀 Watching templates/, _data/, static/ for changes</span></div>
+      <div class="line-row"><span class="output" id="out4">  🔄 Live reload enabled</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="features" id="features">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">Features</div>
+      <div class="section-title">Everything you need, nothing you don't</div>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon">⚡</div>
+        <h3>Built in Rust</h3>
+        <p>Blazing fast builds powered by Rust. Templates compile through minijinja, data fetches are cached, and static assets are copied in parallel.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">🔀</div>
+        <h3>Automatic HTMX Fragments</h3>
+        <p>Every page generates both a full HTML document and a standalone fragment. HTMX partial page loads work out of the box — no configuration needed.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">📡</div>
+        <h3>Remote Data Sources</h3>
+        <p>Pull data from any REST API directly in your template frontmatter. Filter, sort, and limit results. Responses are cached per-build.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">📄</div>
+        <h3>Dynamic Pages</h3>
+        <p>Generate hundreds of pages from a single <code>[slug].html</code> template. Powered by collection queries with automatic slug sanitization.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">🔥</div>
+        <h3>Live Reload Dev Server</h3>
+        <p>Axum-powered dev server with SSE live reload, smart rebuilds, and built-in API proxy to eliminate CORS issues during development.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">🗂</div>
+        <h3>Single File Config</h3>
+        <p>One <code>site.toml</code> controls everything — metadata, build options, data sources, asset localization, and environment variable interpolation.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how" id="how">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">How It Works</div>
+      <div class="section-title">From template to HTMX-ready site</div>
+    </div>
+    <div class="how-flow">
+      <div class="how-step reveal">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h3>Write templates with frontmatter data queries</h3>
+          <p>Use Jinja2 syntax via minijinja. Reference local YAML/JSON files or remote APIs directly in your template's YAML frontmatter.</p>
+        </div>
+      </div>
+      <div class="how-step reveal">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h3>Eigen renders full pages + fragments</h3>
+          <p>Each <code>{% block %}</code> is automatically extracted as an HTML fragment alongside the full page. No extra work required.</p>
+        </div>
+      </div>
+      <div class="how-step reveal">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h3>Use <code>link_to()</code> for seamless navigation</h3>
+          <p>The <code>link_to</code> function emits <code>href</code>, <code>hx-get</code>, <code>hx-target</code>, and <code>hx-push-url</code> in one call. Progressive enhancement baked in.</p>
+        </div>
+      </div>
+      <div class="how-step reveal">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <h3>Deploy anywhere — it's just static files</h3>
+          <p>The output is a plain <code>dist/</code> folder. Deploy to Netlify, Vercel, Cloudflare Pages, S3, or any static host.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE EXAMPLES -->
+<section class="code-section" id="code">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">Examples</div>
+      <div class="section-title">See it in action</div>
+    </div>
+    <div class="reveal">
+      <div class="code-tabs">
+        <button class="code-tab active" onclick="showTab(0)">site.toml</button>
+        <button class="code-tab" onclick="showTab(1)">Template</button>
+        <button class="code-tab" onclick="showTab(2)">Output</button>
+      </div>
+      <div class="code-block active" id="tab0"><pre><span class="cm"># Site configuration</span>
+[<span class="fn">site</span>]
+<span class="attr">name</span> = <span class="st">"My Blog"</span>
+<span class="attr">base_url</span> = <span class="st">"https://myblog.com"</span>
+
+[<span class="fn">build</span>]
+<span class="attr">fragments</span> = <span class="kw">true</span>
+
+[<span class="fn">sources.blog_api</span>]
+<span class="attr">url</span> = <span class="st">"https://api.example.com"</span>
+<span class="attr">headers</span> = { <span class="attr">Authorization</span> = <span class="st">"Bearer ${API_TOKEN}"</span> }</pre></div>
+      <div class="code-block" id="tab1"><pre><span class="cm">&lt;!-- templates/posts/[post].html --&gt;</span>
+<span class="tag">---</span>
+<span class="attr">collection</span>:
+  <span class="attr">source</span>: <span class="st">blog_api</span>
+  <span class="attr">path</span>: <span class="st">/posts</span>
+<span class="attr">slug_field</span>: <span class="st">id</span>
+<span class="attr">item_as</span>: <span class="st">post</span>
+<span class="tag">---</span>
+<span class="kw">{%</span> <span class="fn">extends</span> <span class="st">"_base.html"</span> <span class="kw">%}</span>
+
+<span class="kw">{%</span> <span class="fn">block</span> content <span class="kw">%}</span>
+<span class="tag">&lt;article&gt;</span>
+  <span class="tag">&lt;h1&gt;</span><span class="kw">{{</span> post.title <span class="kw">}}</span><span class="tag">&lt;/h1&gt;</span>
+  <span class="tag">&lt;p&gt;</span><span class="kw">{{</span> post.body <span class="kw">}}</span><span class="tag">&lt;/p&gt;</span>
+<span class="tag">&lt;/article&gt;</span>
+<span class="kw">{%</span> <span class="fn">endblock</span> <span class="kw">%}</span></pre></div>
+      <div class="code-block" id="tab2"><pre><span class="cm"># Eigen generates BOTH files automatically:</span>
+
+<span class="fn">dist/posts/1.html</span>          <span class="cm"># Full HTML page</span>
+<span class="fn">dist/_fragments/posts/1.html</span> <span class="cm"># Just the &lt;article&gt; block</span>
+
+<span class="cm"># The link_to() function wires it all up:</span>
+<span class="tag">&lt;a</span> <span class="attr">href</span>=<span class="st">"/posts/1.html"</span>
+   <span class="attr">hx-get</span>=<span class="st">"/_fragments/posts/1.html"</span>
+   <span class="attr">hx-target</span>=<span class="st">"#content"</span>
+   <span class="attr">hx-push-url</span>=<span class="st">"/posts/1.html"</span><span class="tag">&gt;</span>
+  Read Post
+<span class="tag">&lt;/a&gt;</span></pre></div>
+    </div>
+  </div>
+</section>
+
+<!-- BENEFITS BAR -->
+<section class="benefits">
+  <div class="container">
+    <div class="benefits-grid reveal">
+      <div>
+        <div class="benefit-stat">0</div>
+        <div class="benefit-label">JS Frameworks Required</div>
+      </div>
+      <div>
+        <div class="benefit-stat">2×</div>
+        <div class="benefit-label">Output Per Page</div>
+      </div>
+      <div>
+        <div class="benefit-stat">1</div>
+        <div class="benefit-label">Config File</div>
+      </div>
+      <div>
+        <div class="benefit-stat">∞</div>
+        <div class="benefit-label">Data Sources</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta">
+  <div class="container">
+    <div class="cta-box reveal">
+      <h2>Ready to build something fast?</h2>
+      <p>Eigen is open source and ready for your next project.</p>
+      <div class="cta-buttons">
+        <a href="https://github.com/wavefunk/eigen" class="btn btn-primary" target="_blank" rel="noopener">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" style="margin-right:2px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          View on GitHub
+        </a>
+        <a href="https://github.com/wavefunk/eigen#quick-start" class="btn btn-secondary" target="_blank" rel="noopener">
+          Read the Docs →
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="container">
+    <p>
+      <a href="https://github.com/wavefunk/eigen" target="_blank" rel="noopener">Eigen</a>
+      — Built with Rust, minijinja &amp; Axum.
+      <a href="https://github.com/wavefunk/eigen/blob/master/LICENSE" target="_blank" rel="noopener">License</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+// Tab switching
+function showTab(n){
+  document.querySelectorAll('.code-tab').forEach(function(t,i){
+    t.classList.toggle('active',i===n);
+  });
+  document.querySelectorAll('.code-block').forEach(function(b,i){
+    b.classList.toggle('active',i===n);
+  });
+}
+
+// Scroll reveal
+(function(){
+  var els=document.querySelectorAll('.reveal');
+  if(!els.length)return;
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){e.target.classList.add('visible');io.unobserve(e.target)}
+      });
+    },{threshold:0.12,rootMargin:'0px 0px -40px 0px'});
+    els.forEach(function(el){io.observe(el)});
+  }else{
+    els.forEach(function(el){el.classList.add('visible')});
+  }
+
+  // Staggered terminal output
+  var outputs=['out1','out2','out3','out4'];
+  var delays=[600,1400,1800,2100];
+  outputs.forEach(function(id,i){
+    var el=document.getElementById(id);
+    if(el){el.style.opacity='0';setTimeout(function(){el.style.transition='opacity .3s';el.style.opacity='1'},delays[i])}
+  });
+})();
+</script>
+</body>
+</html>

@@ -53,7 +53,7 @@ pub fn build_page_context(
     // 2. Page-specific data (overrides global data on conflict).
     for (k, v) in page_data {
         if global_data.contains_key(k) {
-            tracing::warn!(
+            tracing::debug!(
                 "Frontmatter data key '{}' overrides global data from _data/. \
                  The global data for '{}' will not be available in this template.",
                 k, k,

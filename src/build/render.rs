@@ -14,6 +14,7 @@ use crate::data::{self, DataFetcher};
 use crate::discovery::{self, PageDef, PageType};
 use crate::plugins::registry::{self, PluginRegistry};
 use crate::template;
+use crate::template::errors::TemplateError;
 
 use super::context::{self, PageMeta};
 use super::fragments;
@@ -238,8 +239,17 @@ fn render_static_page(
     let tmpl = env.get_template(&tmpl_name)
         .wrap_err_with(|| format!("Template '{}' not found in environment", tmpl_name))?;
 
-    let rendered = tmpl.render(&ctx)
-        .wrap_err_with(|| format!("Failed to render template '{}'", tmpl_name))?;
+    let rendered = match tmpl.render(&ctx) {
+        Ok(html) => html,
+        Err(err) => {
+            let te = TemplateError::from_minijinja(&err, &tmpl_name, None);
+            eprintln!("{}", te.format_console(&tmpl_name, None));
+            return Err(eyre::eyre!(
+                "Failed to render template '{}': {}",
+                tmpl_name, te.short_msg
+            ));
+        }
+    };
 
     // 4. Write full page (with markers stripped, assets localized, plugins applied).
     let full_html = fragments::strip_fragment_markers(&rendered);
@@ -422,13 +432,17 @@ fn render_dynamic_page(
         );
 
         // Render.
-        let rendered = tmpl.render(&ctx)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to render template '{}' for item with slug '{}'",
-                    tmpl_name, slug,
-                )
-            })?;
+        let rendered = match tmpl.render(&ctx) {
+            Ok(html) => html,
+            Err(err) => {
+                let te = TemplateError::from_minijinja(&err, &tmpl_name, Some(&slug));
+                eprintln!("{}", te.format_console(&tmpl_name, Some(&slug)));
+                return Err(eyre::eyre!(
+                    "Failed to render template '{}' for item with slug '{}': {}",
+                    tmpl_name, slug, te.short_msg
+                ));
+            }
+        };
 
         // Write full page (with assets localized, plugins applied).
         let full_html = fragments::strip_fragment_markers(&rendered);

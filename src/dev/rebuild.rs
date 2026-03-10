@@ -21,10 +21,23 @@ use crate::data::{self, DataFetcher};
 use crate::discovery::{self, PageDef, PageType};
 use crate::plugins::registry::{self, PluginRegistry};
 use crate::template;
+use crate::template::errors::TemplateError;
 use crate::build::render::RenderedPage;
 
 use super::inject;
 use super::watcher::RebuildScope;
+
+/// Result of a dev rebuild: success, or an error with info about whether
+/// an error page was written to dist/ (and the browser should be reloaded
+/// to display it).
+#[derive(Debug)]
+pub struct DevBuildError {
+    /// The underlying eyre error.
+    pub report: eyre::Report,
+    /// Whether an HTML error page was written to dist/ and the browser
+    /// should be sent a reload signal to display it.
+    pub has_error_page: bool,
+}
 
 /// Mutable state preserved across dev rebuilds.
 pub struct DevBuildState {
@@ -69,56 +82,70 @@ impl DevBuildState {
     }
 
     /// Handle a rebuild based on the detected scope.
-    pub fn rebuild(&mut self, scope: RebuildScope) -> Result<()> {
+    ///
+    /// Returns `Ok(())` on success, or `Err(DevBuildError)` on failure.
+    /// If the error is a template render error, an HTML error page will have
+    /// been written to dist/ and `has_error_page` will be `true` — the caller
+    /// should still trigger a browser reload so the user sees the error.
+    pub fn rebuild(&mut self, scope: RebuildScope) -> std::result::Result<(), DevBuildError> {
         let start = Instant::now();
 
-        match scope {
-            RebuildScope::Full => {
-                tracing::info!("Full rebuild (config changed)...");
-                // Reload config and plugins.
-                self.config = crate::config::load_config(&self.project_root)?;
-                self.fetcher = DataFetcher::new(&self.config.sources, &self.project_root);
-                self.plugin_registry = registry::build_registry(&self.config.plugins, &self.project_root)?;
-                self.full_build()?;
-            }
-            RebuildScope::DataOnly => {
-                tracing::info!("Rebuild (data changed)...");
-                self.fetcher.clear_file_cache();
-                self.full_build()?;
-            }
-            RebuildScope::Templates(changed) => {
-                tracing::info!("Rebuild (templates changed: {:?})...", changed);
-                // If any _-prefixed (layout/partial) file changed, do full rebuild
-                // since we can't easily track which pages depend on which layouts.
-                let has_layout_change = changed.iter().any(|p| {
-                    p.components().any(|c| {
-                        c.as_os_str()
-                            .to_str()
-                            .map(|s| s.starts_with('_'))
-                            .unwrap_or(false)
-                    })
-                });
-
-                if has_layout_change {
-                    tracing::debug!("  Layout/partial changed — full rebuild.");
-                    self.full_build()?;
-                } else {
-                    // Only page templates changed — still do a full rebuild
-                    // for simplicity (templates may reference each other via
-                    // includes etc.), but skip re-fetching cached URL data.
+        let result: Result<()> = (|| {
+            match scope {
+                RebuildScope::Full => {
+                    tracing::info!("Full rebuild (config changed)...");
+                    // Reload config and plugins.
+                    self.config = crate::config::load_config(&self.project_root)?;
+                    self.fetcher = DataFetcher::new(&self.config.sources, &self.project_root);
+                    self.plugin_registry = registry::build_registry(&self.config.plugins, &self.project_root)?;
                     self.full_build()?;
                 }
-            }
-            RebuildScope::StaticOnly => {
-                tracing::info!("Re-copying static assets...");
-                crate::build::output::copy_static_assets(&self.project_root)?;
-                tracing::info!("Static assets copied.");
-            }
-        }
+                RebuildScope::DataOnly => {
+                    tracing::info!("Rebuild (data changed)...");
+                    self.fetcher.clear_file_cache();
+                    self.full_build()?;
+                }
+                RebuildScope::Templates(changed) => {
+                    tracing::info!("Rebuild (templates changed: {:?})...", changed);
+                    let has_layout_change = changed.iter().any(|p| {
+                        p.components().any(|c| {
+                            c.as_os_str()
+                                .to_str()
+                                .map(|s| s.starts_with('_'))
+                                .unwrap_or(false)
+                        })
+                    });
 
-        let elapsed = start.elapsed();
-        tracing::info!("Rebuild completed in {:.1?}", elapsed);
-        Ok(())
+                    if has_layout_change {
+                        tracing::debug!("  Layout/partial changed — full rebuild.");
+                        self.full_build()?;
+                    } else {
+                        self.full_build()?;
+                    }
+                }
+                RebuildScope::StaticOnly => {
+                    tracing::info!("Re-copying static assets...");
+                    crate::build::output::copy_static_assets(&self.project_root)?;
+                    tracing::info!("Static assets copied.");
+                }
+            }
+
+            let elapsed = start.elapsed();
+            tracing::info!("Rebuild completed in {:.1?}", elapsed);
+            Ok(())
+        })();
+
+        result.map_err(|e| {
+            // Check if any error page HTML files were written by the render
+            // functions. We detect this by checking for the _error.html sentinel.
+            let dist_dir = self.project_root.join("dist");
+            let has_error_page = dist_dir.join("_error.html").exists();
+
+            DevBuildError {
+                report: e,
+                has_error_page,
+            }
+        })
     }
 
     /// Perform a full build with live-reload injection.
@@ -256,9 +283,23 @@ fn render_static_page_dev(
         .get_template(&tmpl_name)
         .wrap_err_with(|| format!("Template '{}' not found", tmpl_name))?;
 
-    let rendered = tmpl
-        .render(&ctx)
-        .wrap_err_with(|| format!("Failed to render '{}'", tmpl_name))?;
+    let rendered = match tmpl.render(&ctx) {
+        Ok(html) => html,
+        Err(err) => {
+            let te = TemplateError::from_minijinja(&err, &tmpl_name, None);
+            let console_msg = te.format_console(&tmpl_name, None);
+            let error_html = te.to_error_html(&tmpl_name, None);
+
+            // Write the error page to the output location and to _error.html sentinel.
+            write_dev_error_pages(dist_dir, &output_path, &error_html);
+
+            eprintln!("{}", console_msg);
+            return Err(eyre::eyre!(
+                "Failed to render template '{}': {}",
+                tmpl_name, te.short_msg
+            ));
+        }
+    };
 
     // Strip markers, localize assets, run plugins, and inject reload script.
     let full_html = fragments::strip_fragment_markers(&rendered);
@@ -315,6 +356,27 @@ fn render_static_page_dev(
         is_index,
         is_dynamic: false,
     })
+}
+
+/// Write an error HTML page to the output location and to the `_error.html`
+/// sentinel file. The sentinel is checked by `rebuild()` to determine whether
+/// a browser reload should be triggered.
+fn write_dev_error_pages(dist_dir: &Path, output_path: &Path, error_html: &str) {
+    // Ensure dist dir exists.
+    let _ = std::fs::create_dir_all(dist_dir);
+
+    // Write to the actual output path so if the user is viewing that page, they see the error.
+    let full_path = dist_dir.join(output_path);
+    if let Some(parent) = full_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&full_path, error_html);
+
+    // Write to _error.html sentinel.
+    let _ = std::fs::write(dist_dir.join("_error.html"), error_html);
+
+    // Also write to index.html so the root page shows the error.
+    let _ = std::fs::write(dist_dir.join("index.html"), error_html);
 }
 
 /// Render all pages for a dynamic template with live-reload script injection.
@@ -396,9 +458,23 @@ fn render_dynamic_page_dev(
         let ctx =
             context::build_page_context(config, global_data, &item_data, meta, Some((item_as, item)));
 
-        let rendered = tmpl.render(&ctx).wrap_err_with(|| {
-            format!("Failed to render '{}' for slug '{}'", tmpl_name, slug)
-        })?;
+        let rendered = match tmpl.render(&ctx) {
+            Ok(html) => html,
+            Err(err) => {
+                let te = TemplateError::from_minijinja(&err, &tmpl_name, Some(&slug));
+                let console_msg = te.format_console(&tmpl_name, Some(&slug));
+                let error_html = te.to_error_html(&tmpl_name, Some(&slug));
+
+                // Write the error page to the output location and sentinel.
+                write_dev_error_pages(dist_dir, &output_path, &error_html);
+
+                eprintln!("{}", console_msg);
+                return Err(eyre::eyre!(
+                    "Failed to render '{}' for slug '{}': {}",
+                    tmpl_name, slug, te.short_msg
+                ));
+            }
+        };
 
         // Strip markers, localize assets, run plugins, and inject reload script.
         let full_html = fragments::strip_fragment_markers(&rendered);

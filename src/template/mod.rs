@@ -6,6 +6,7 @@
 //! - **Functions**: link_to, current_year, asset
 
 mod environment;
+pub mod errors;
 pub mod filters;
 pub mod functions;
 pub mod preprocessing;

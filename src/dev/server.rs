@@ -104,12 +104,22 @@ pub async fn dev_command(project_root: &Path, port: u16) -> Result<()> {
     std::thread::spawn(move || {
         let mut build_state = build_state;
         while let Ok(scope) = sync_rx.recv() {
-            if let Err(e) = build_state.rebuild(scope) {
-                eprintln!("\n  Build error: {:#}", e);
-                eprintln!("  Waiting for next change...\n");
-            } else {
-                // Signal all SSE clients to reload.
-                let _ = reload_signal.send(());
+            match build_state.rebuild(scope) {
+                Ok(()) => {
+                    // Signal all SSE clients to reload.
+                    let _ = reload_signal.send(());
+                }
+                Err(e) => {
+                    if e.has_error_page {
+                        // A template error page was written to dist/ — reload
+                        // the browser so the user sees it instead of stale content.
+                        eprintln!("  Waiting for next change...\n");
+                        let _ = reload_signal.send(());
+                    } else {
+                        eprintln!("\n  Build error: {:#}", e.report);
+                        eprintln!("  Waiting for next change...\n");
+                    }
+                }
             }
         }
     });

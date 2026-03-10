@@ -1,4 +1,5 @@
 # Eigen
+[![Website](https://github.com/wavefunk/eigen/actions/workflows/website.yml/badge.svg)](https://github.com/wavefunk/eigen/actions/workflows/website.yml)
 
 A fast, opinionated static site generator with first-class HTMX support. Eigen generates full HTML pages **and** HTML fragments side-by-side, enabling seamless HTMX-powered partial page loads out of the box.
 

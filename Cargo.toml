@@ -27,6 +27,7 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
 mediatype = "0.21.0"
 mime = "0.3.17"
+minify-html = "0.18.1"
 minijinja = { version = "2.15.1", features = ["loader", "debug"] }
 notify = "8"
 pulldown-cmark = "0.13"

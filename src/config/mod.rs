@@ -40,6 +40,9 @@ pub struct BuildConfig {
     /// The default block name to extract as a fragment.
     #[serde(default = "default_content_block")]
     pub content_block: String,
+    /// Whether to minify HTML (including inline CSS and JS) output.
+    #[serde(default = "default_true")]
+    pub minify: bool,
 }
 
 impl Default for BuildConfig {
@@ -48,6 +51,7 @@ impl Default for BuildConfig {
             fragments: true,
             fragment_dir: default_fragment_dir(),
             content_block: default_content_block(),
+            minify: true,
         }
     }
 }
@@ -465,6 +469,31 @@ exclude = ["static/favicons/*", "**/*.svg", "**/*.gif", "logo.png"]
         assert_eq!(config.assets.images.widths, vec![320, 640, 1024]);
         assert_eq!(config.assets.images.exclude.len(), 4);
         assert!(config.assets.images.exclude.contains(&"static/favicons/*".to_string()));
+    }
+
+    #[test]
+    fn test_minify_defaults_to_true() {
+        let toml_str = r#"
+[site]
+name = "Minify Default"
+base_url = "https://example.com"
+"#;
+        let config = parse_toml(toml_str).unwrap();
+        assert!(config.build.minify);
+    }
+
+    #[test]
+    fn test_minify_disabled() {
+        let toml_str = r#"
+[site]
+name = "Minify Disabled"
+base_url = "https://example.com"
+
+[build]
+minify = false
+"#;
+        let config = parse_toml(toml_str).unwrap();
+        assert!(!config.build.minify);
     }
 
     #[test]

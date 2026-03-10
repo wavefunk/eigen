@@ -3,6 +3,7 @@
 
 pub mod context;
 pub mod fragments;
+pub mod minify;
 pub mod output;
 pub mod render;
 pub mod sitemap;

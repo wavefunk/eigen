@@ -19,6 +19,7 @@ use crate::template::errors::TemplateError;
 
 use super::context::{self, PageMeta};
 use super::fragments;
+use super::minify;
 use super::output;
 use super::sitemap;
 
@@ -94,6 +95,10 @@ pub fn build(project_root: &Path) -> Result<()> {
             config.assets.images.widths,
             config.assets.images.quality,
         );
+    }
+
+    if config.build.minify {
+        tracing::info!("HTML minification enabled (CSS + JS).");
     }
 
     // Build timestamp.
@@ -297,6 +302,13 @@ fn render_static_page(
         dist_dir,
     ).wrap_err_with(|| format!("Plugin post_render_html failed for '{}'", tmpl_name))?;
 
+    // 4c. Minify HTML (last transformation before writing).
+    let full_html = if config.build.minify {
+        minify::minify_html(&full_html)
+    } else {
+        full_html
+    };
+
     let full_path = dist_dir.join(&output_path);
 
     if let Some(parent) = full_path.parent() {
@@ -326,6 +338,11 @@ fn render_static_page(
                 image_cache,
                 dist_dir,
             )?;
+            let optimized_frags = if config.build.minify {
+                minify_fragments(&optimized_frags)
+            } else {
+                optimized_frags
+            };
             fragments::write_fragments(
                 dist_dir,
                 &output_path,
@@ -520,6 +537,13 @@ fn render_dynamic_page(
             format!("Plugin post_render_html failed for '{}' slug '{}'", tmpl_name, slug)
         })?;
 
+        // Minify HTML (last transformation before writing).
+        let full_html = if config.build.minify {
+            minify::minify_html(&full_html)
+        } else {
+            full_html
+        };
+
         let full_path = dist_dir.join(&output_path);
 
         if let Some(parent) = full_path.parent() {
@@ -547,6 +571,11 @@ fn render_dynamic_page(
                     image_cache,
                     dist_dir,
                 )?;
+                let optimized_frags = if config.build.minify {
+                    minify_fragments(&optimized_frags)
+                } else {
+                    optimized_frags
+                };
                 fragments::write_fragments(
                     dist_dir,
                     &output_path,
@@ -599,6 +628,17 @@ fn localize_fragments(
         });
     }
     Ok(result)
+}
+
+/// Minify all fragments.
+fn minify_fragments(frags: &[fragments::Fragment]) -> Vec<fragments::Fragment> {
+    frags
+        .iter()
+        .map(|frag| fragments::Fragment {
+            block_name: frag.block_name.clone(),
+            html: minify::minify_html(&frag.html),
+        })
+        .collect()
 }
 
 /// Optimize images in fragment HTML.
@@ -686,6 +726,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = true
+minify = false
 "#,
         );
 
@@ -717,14 +758,15 @@ fragments = true
 
         let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
         assert!(html.contains("<h1>Home</h1>"));
-        assert!(html.contains("<!DOCTYPE html>"));
+        // Doctype may be minified to lowercase.
+        assert!(html.to_lowercase().contains("<!doctype html>") || html.contains("<!doctypehtml>"));
 
         // Check fragments.
         assert!(root.join("dist/_fragments/index.html").exists());
         let frag = fs::read_to_string(root.join("dist/_fragments/index.html")).unwrap();
         assert!(frag.contains("<h1>Home</h1>"));
         // Fragment should NOT contain the DOCTYPE wrapper.
-        assert!(!frag.contains("<!DOCTYPE html>"));
+        assert!(!frag.to_lowercase().contains("doctype"));
 
         // Check sitemap.
         assert!(root.join("dist/sitemap.xml").exists());
@@ -747,6 +789,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#,
         );
 

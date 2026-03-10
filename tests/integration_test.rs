@@ -37,6 +37,11 @@ fn test_full_build_example_site() {
     let root = tmp.path();
     copy_dir_all(&example_site, root);
 
+    // Disable minification so we can assert on exact HTML structure.
+    let site_toml = fs::read_to_string(root.join("site.toml")).unwrap();
+    let site_toml = site_toml.replace("[build]", "[build]\nminify = false");
+    fs::write(root.join("site.toml"), site_toml).unwrap();
+
     eigen::build::build(root).unwrap();
 
     // Verify dist/ structure.
@@ -104,6 +109,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = true
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -162,6 +168,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -196,6 +203,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -258,6 +266,7 @@ base_url = "https://test.com"
 [build]
 fragments = true
 content_block = "content"
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -294,6 +303,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = true
+minify = false
 "#);
 
     write(root, "templates/_base.html", r#"<!DOCTYPE html>
@@ -338,6 +348,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -373,6 +384,7 @@ base_url = "https://test.com"
 fragments = true
 fragment_dir = "_fragments"
 content_block = "content"
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -416,6 +428,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html", r#"<a {{ link_to("/about.html") }}>About</a>"#);
@@ -443,6 +456,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     // Use a data file so we can test the markdown filter on multi-line content.
@@ -469,6 +483,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html",
@@ -492,6 +507,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html",
@@ -515,6 +531,7 @@ base_url = "https://example.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html",
@@ -538,6 +555,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html", r#"---
@@ -578,6 +596,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html",
@@ -602,6 +621,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html",
@@ -625,6 +645,7 @@ base_url = "https://awesome.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html",
@@ -653,6 +674,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html", r#"---
@@ -691,6 +713,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html", r#"---
@@ -725,6 +748,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html", r#"---
@@ -773,6 +797,7 @@ base_url = "https://meta.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -809,6 +834,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -866,6 +892,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_partials/footer.html",
@@ -893,6 +920,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html", r#"<!DOCTYPE html>
@@ -925,6 +953,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -968,6 +997,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/a/b/c/deep.html", "<p>Deep page</p>");
@@ -991,6 +1021,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/_base.html",
@@ -1051,6 +1082,11 @@ fn test_init_creates_buildable_project() {
     assert!(project_path.join("_data/nav.yaml").exists());
     assert!(project_path.join("static/css/style.css").exists());
     assert!(project_path.join(".gitignore").exists());
+
+    // Disable minification so we can assert exact HTML structure.
+    let site_toml = fs::read_to_string(project_path.join("site.toml")).unwrap();
+    let site_toml = site_toml.replace("[build]", "[build]\nminify = false");
+    fs::write(project_path.join("site.toml"), site_toml).unwrap();
 
     // Build the scaffolded project.
     eigen::build::build(&project_path).unwrap();
@@ -1119,6 +1155,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html",
@@ -1153,6 +1190,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 "#);
 
     write(root, "templates/index.html", "<h1>Hello</h1>");
@@ -1175,6 +1213,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 
 [plugins.strapi]
 media_base_url = "http://localhost:1337"
@@ -1201,6 +1240,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 
 [sources.strapi]
 url = "http://localhost:0"
@@ -1247,6 +1287,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 
 [plugins.strapi]
 media_base_url = "http://localhost:1337"
@@ -1272,6 +1313,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 
 [plugins.strapi]
 media_base_url = "http://localhost:1337"
@@ -1298,6 +1340,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 
 [plugins.nonexistent_plugin]
 some_option = true
@@ -1323,6 +1366,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 
 [plugins.strapi]
 media_base_url = "http://localhost:1337"
@@ -1353,6 +1397,7 @@ base_url = "https://test.com"
 
 [build]
 fragments = false
+minify = false
 
 [plugins.strapi]
 media_base_url = "http://localhost:1337"
@@ -1420,6 +1465,145 @@ base_url = "https://test.com"
 
     let config = eigen::config::load_config(root).unwrap();
     assert!(config.plugins.is_empty());
+}
+
+// ============================================================================
+// HTML minification
+// ============================================================================
+
+#[test]
+fn test_build_with_minification_enabled() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "Minify Test"
+base_url = "https://test.com"
+
+[build]
+fragments = true
+minify = true
+"#);
+
+    write(root, "templates/_base.html", r#"<!DOCTYPE html>
+<html>
+  <head>
+    <title>{{ site.name }}</title>
+    <style>
+      body {
+        color:   red;
+        margin:  0;
+      }
+    </style>
+  </head>
+  <body>
+    {% block content %}{% endblock %}
+  </body>
+</html>"#);
+
+    write(root, "templates/index.html", r#"{% extends "_base.html" %}
+{% block content %}
+    <h1>  Hello,   World!  </h1>
+    <!-- this comment should be stripped -->
+    <p>Welcome to the site.</p>
+{% endblock %}"#);
+
+    eigen::build::build(root).unwrap();
+
+    let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
+
+    // Content should be preserved.
+    assert!(html.contains("Hello,"));
+    assert!(html.contains("World!"));
+    assert!(html.contains("Welcome to the site."));
+    assert!(html.contains("Minify Test"));
+
+    // Comments should be stripped.
+    assert!(!html.contains("<!-- this comment should be stripped -->"));
+
+    // CSS should be minified (no multi-space padding).
+    assert!(html.contains("color:red"));
+
+    // Output should be smaller than a non-minified version would be.
+    // (We just check it's reasonably small — no excessive whitespace.)
+    assert!(!html.contains("    <h1>"), "Indentation should be removed");
+
+    // Fragments should also be minified.
+    let frag = fs::read_to_string(root.join("dist/_fragments/index.html")).unwrap();
+    assert!(frag.contains("Hello,"));
+    assert!(!frag.contains("<!-- this comment should be stripped -->"));
+}
+
+#[test]
+fn test_build_minification_disabled() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "No Minify"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+"#);
+
+    write(root, "templates/index.html", r#"<!DOCTYPE html>
+<html>
+  <body>
+    <!-- keep this comment -->
+    <h1>  Hello  </h1>
+  </body>
+</html>"#);
+
+    eigen::build::build(root).unwrap();
+
+    let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
+
+    // With minification off, whitespace and comments should be preserved.
+    assert!(html.contains("<!-- keep this comment -->"));
+    assert!(html.contains("<!DOCTYPE html>"));
+    // Original indentation should be preserved.
+    assert!(html.contains("    <h1>"));
+}
+
+#[test]
+fn test_minification_preserves_picture_srcset() {
+    // Verify that minification doesn't break <picture> elements with srcset.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "Picture Minify"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = true
+
+[assets.images]
+optimize = false
+"#);
+
+    write(root, "templates/index.html", r#"<picture>
+  <source srcset="/img/hero-480w.avif 480w, /img/hero-768w.avif 768w" type="image/avif">
+  <source srcset="/img/hero-480w.webp 480w, /img/hero-768w.webp 768w" type="image/webp">
+  <img src="/img/hero.jpg" alt="Hero image" class="hero" loading="lazy">
+</picture>"#);
+
+    eigen::build::build(root).unwrap();
+
+    let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
+
+    // srcset values should survive minification.
+    assert!(html.contains("480w"));
+    assert!(html.contains("768w"));
+    assert!(html.contains("hero-480w.avif"));
+    assert!(html.contains("hero-480w.webp"));
+    assert!(html.contains("loading="));
 }
 
 // ============================================================================

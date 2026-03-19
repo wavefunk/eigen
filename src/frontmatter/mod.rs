@@ -53,6 +53,15 @@ impl Default for Frontmatter {
     }
 }
 
+/// HTTP method for data source requests.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpMethod {
+    #[default]
+    Get,
+    Post,
+}
+
 /// Describes where and how to fetch a piece of data.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DataQuery {
@@ -72,6 +81,11 @@ pub struct DataQuery {
     /// Key-value filters: only keep items where `item[key] == value`.
     /// Values may contain `{{ item.field }}` for interpolation in dynamic pages.
     pub filter: Option<HashMap<String, String>>,
+    /// HTTP method. Defaults to GET.
+    #[serde(default)]
+    pub method: HttpMethod,
+    /// JSON body for POST requests. Deserialized from YAML into serde_json::Value.
+    pub body: Option<serde_json::Value>,
 }
 
 /// Per-page SEO metadata for Open Graph and Twitter Card tags.
@@ -267,13 +281,12 @@ pub fn parse_frontmatter(raw_yaml: &str, file_path: &str) -> Result<Frontmatter>
 
     let publish_date = match raw.publish_date {
         Some(ref s) => {
-            let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .wrap_err_with(|| {
-                    format!(
-                        "Invalid publish_date '{}' in {file_path} (expected YYYY-MM-DD)",
-                        s
-                    )
-                })?;
+            let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").wrap_err_with(|| {
+                format!(
+                    "Invalid publish_date '{}' in {file_path} (expected YYYY-MM-DD)",
+                    s
+                )
+            })?;
             Some(date)
         }
         None => None,
@@ -508,7 +521,10 @@ mod tests {
         assert_eq!(fm.seo.image.as_deref(), Some("/assets/about-hero.jpg"));
         assert_eq!(fm.seo.og_type.as_deref(), Some("website"));
         assert_eq!(fm.seo.twitter_card.as_deref(), Some("summary_large_image"));
-        assert_eq!(fm.seo.canonical_url.as_deref(), Some("https://example.com/about"));
+        assert_eq!(
+            fm.seo.canonical_url.as_deref(),
+            Some("https://example.com/about")
+        );
     }
 
     #[test]
@@ -630,7 +646,10 @@ mod tests {
         match &fm.schema {
             Some(SchemaConfigValue::Full(full)) => {
                 assert_eq!(full.author.as_deref(), Some("{{ post.author_name }}"));
-                assert_eq!(full.date_published.as_deref(), Some("{{ post.published_at }}"));
+                assert_eq!(
+                    full.date_published.as_deref(),
+                    Some("{{ post.published_at }}")
+                );
             }
             other => panic!("Expected Some(Full), got {:?}", other),
         }
@@ -640,6 +659,65 @@ mod tests {
     fn test_default_schema_is_none() {
         let fm = Frontmatter::default();
         assert!(fm.schema.is_none());
+    }
+
+    // --- HttpMethod and body frontmatter tests ---
+
+    #[test]
+    fn test_parse_method_post_with_body() {
+        let yaml = concat!(
+            "data:\n",
+            "  projects:\n",
+            "    source: notion\n",
+            "    path: /v1/databases/abc/query\n",
+            "    method: post\n",
+            "    body:\n",
+            "      page_size: 100\n",
+            "      filter:\n",
+            "        property: \"Status\"\n",
+            "    root: results\n",
+        );
+        let fm = parse_frontmatter(yaml, "test.html").unwrap();
+        let q = &fm.data["projects"];
+        assert_eq!(q.method, HttpMethod::Post);
+        let body = q.body.as_ref().unwrap();
+        assert_eq!(body["page_size"], 100);
+        assert_eq!(body["filter"]["property"], "Status");
+    }
+
+    #[test]
+    fn test_parse_method_defaults_to_get() {
+        let yaml = concat!("data:\n", "  nav:\n", "    file: \"nav.yaml\"\n",);
+        let fm = parse_frontmatter(yaml, "test.html").unwrap();
+        assert_eq!(fm.data["nav"].method, HttpMethod::Get);
+    }
+
+    #[test]
+    fn test_parse_method_explicit_get() {
+        let yaml = concat!(
+            "data:\n",
+            "  items:\n",
+            "    source: api\n",
+            "    path: /items\n",
+            "    method: get\n",
+        );
+        let fm = parse_frontmatter(yaml, "test.html").unwrap();
+        assert_eq!(fm.data["items"].method, HttpMethod::Get);
+        assert!(fm.data["items"].body.is_none());
+    }
+
+    #[test]
+    fn test_parse_body_absent() {
+        let yaml = concat!(
+            "data:\n",
+            "  items:\n",
+            "    source: api\n",
+            "    path: /items\n",
+            "    method: post\n",
+        );
+        let fm = parse_frontmatter(yaml, "test.html").unwrap();
+        assert_eq!(fm.data["items"].method, HttpMethod::Post);
+        assert!(fm.data["items"].body.is_none());
     }
 
     // --- Draft and publish_date frontmatter tests ---

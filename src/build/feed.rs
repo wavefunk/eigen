@@ -52,6 +52,8 @@ fn build_feed_query(config: &FeedConfig) -> DataQuery {
         sort: config.sort.clone(),
         limit: Some(config.limit),
         filter: None,
+        method: Default::default(),
+        body: None,
     }
 }
 

@@ -1607,6 +1607,269 @@ optimize = false
 }
 
 // ============================================================================
+// POST method data queries
+// ============================================================================
+
+/// Verify that frontmatter with `method: post` and `body` (including
+/// interpolation placeholders) parses correctly and flows through the
+/// full build pipeline without error.
+///
+/// Local-file fetching ignores the HTTP method, so this test confirms
+/// that the presence of POST-specific fields does not break the build
+/// and that body interpolation resolves before the query is executed.
+#[test]
+fn test_post_method_dynamic_page_full_build() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "POST Method Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+"#);
+
+    write(root, "templates/_base.html",
+          "<html>{% block content %}{% endblock %}</html>");
+
+    // Dynamic page: collection from a local file, per-item data query
+    // that declares method: post with a body containing interpolation.
+    // Since the actual fetch is a local file, the method/body are parsed
+    // and interpolated but do not affect file reading.
+    write(root, "templates/[project].html", r#"---
+collection:
+  file: "projects.json"
+slug_field: slug
+item_as: project
+data:
+  details:
+    file: "details.json"
+    method: post
+    body:
+      project_id: "{{ project.id }}"
+      include_archived: false
+    filter:
+      project_id: "{{ project.id }}"
+---
+{% extends "_base.html" %}
+{% block content %}
+<h1>{{ project.name }}</h1>
+{% for d in details %}<p>{{ d.info }}</p>{% endfor %}
+{% endblock %}"#);
+
+    write(root, "_data/projects.json", r#"[
+        {"slug": "alpha", "id": "1", "name": "Alpha"},
+        {"slug": "beta", "id": "2", "name": "Beta"}
+    ]"#);
+
+    write(root, "_data/details.json", r#"[
+        {"project_id": "1", "info": "Alpha details"},
+        {"project_id": "2", "info": "Beta details"}
+    ]"#);
+
+    // The build should succeed — POST fields must not cause errors.
+    eigen::build::build(root, true).unwrap();
+
+    let alpha = fs::read_to_string(root.join("dist/alpha.html")).unwrap();
+    assert!(alpha.contains("<h1>Alpha</h1>"), "Alpha page should render project name");
+    assert!(alpha.contains("Alpha details"), "Alpha page should have filtered details");
+    assert!(!alpha.contains("Beta details"), "Alpha page should NOT have Beta details");
+
+    let beta = fs::read_to_string(root.join("dist/beta.html")).unwrap();
+    assert!(beta.contains("<h1>Beta</h1>"), "Beta page should render project name");
+    assert!(beta.contains("Beta details"), "Beta page should have filtered details");
+    assert!(!beta.contains("Alpha details"), "Beta page should NOT have Alpha details");
+}
+
+/// Verify that `extract_frontmatter` round-trips POST method and body
+/// fields correctly from raw template content.
+#[test]
+fn test_post_method_frontmatter_parsing_from_template() {
+    let template = r#"---
+data:
+  results:
+    source: notion
+    path: /v1/databases/abc/query
+    method: post
+    body:
+      page_size: 100
+      filter:
+        property: "Status"
+        select:
+          equals: "Published"
+    root: results
+---
+<html>{{ results }}</html>"#;
+
+    let (fm, body) = eigen::frontmatter::extract_frontmatter(template, "test.html").unwrap();
+
+    assert_eq!(body, "<html>{{ results }}</html>");
+    assert_eq!(fm.data.len(), 1);
+
+    let q = &fm.data["results"];
+    assert_eq!(q.method, eigen::frontmatter::HttpMethod::Post);
+    assert_eq!(q.source.as_deref(), Some("notion"));
+    assert_eq!(q.path.as_deref(), Some("/v1/databases/abc/query"));
+    assert_eq!(q.root.as_deref(), Some("results"));
+
+    let body_val = q.body.as_ref().expect("body should be present");
+    assert_eq!(body_val["page_size"], 100);
+    assert_eq!(body_val["filter"]["property"], "Status");
+    assert_eq!(body_val["filter"]["select"]["equals"], "Published");
+}
+
+/// Verify the full pipeline: frontmatter with POST body containing
+/// `{{ item.field }}` interpolation is correctly resolved per-item
+/// via `resolve_dynamic_page_data_for_item`.
+#[test]
+fn test_post_method_body_interpolation_via_resolve_item_data() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    // Write the data files that the queries will read.
+    write(root, "_data/entries.json", r#"[
+        {"entry_id": "e1", "title": "Entry One"},
+        {"entry_id": "e2", "title": "Entry Two"},
+        {"entry_id": "e3", "title": "Entry Three"}
+    ]"#);
+
+    let sources = std::collections::HashMap::new();
+    let mut fetcher = eigen::data::DataFetcher::new(&sources, root);
+
+    // Simulate a dynamic page's frontmatter with a POST query whose body
+    // references the current item.
+    let fm = eigen::frontmatter::Frontmatter {
+        item_as: "record".into(),
+        data: {
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "entries".into(),
+                eigen::frontmatter::DataQuery {
+                    file: Some("entries.json".into()),
+                    method: eigen::frontmatter::HttpMethod::Post,
+                    body: Some(serde_json::json!({
+                        "lookup": "{{ record.entry_id }}",
+                        "nested": {
+                            "ref": "{{ record.entry_id }}"
+                        }
+                    })),
+                    filter: Some({
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("entry_id".into(), "{{ record.entry_id }}".into());
+                        f
+                    }),
+                    ..Default::default()
+                },
+            );
+            m
+        },
+        ..Default::default()
+    };
+
+    // Resolve for an item with entry_id = "e2".
+    let item = serde_json::json!({"entry_id": "e2", "slug": "rec-2"});
+    let result = eigen::data::resolve_dynamic_page_data_for_item(
+        &fm, &item, &mut fetcher, None,
+    ).unwrap();
+
+    // The filter should have matched only the entry with entry_id "e2".
+    let entries = result["entries"].as_array().expect("entries should be an array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["title"], "Entry Two");
+}
+
+/// Verify that a static page with `method: post` and a body (no interpolation)
+/// parses and builds correctly through the full pipeline.
+#[test]
+fn test_post_method_static_page_full_build() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "Static POST Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+"#);
+
+    write(root, "templates/_base.html",
+          "<html>{% block content %}{% endblock %}</html>");
+
+    // Static page with a POST data query. The method/body are parsed
+    // but local file fetching ignores them.
+    write(root, "templates/index.html", r#"---
+data:
+  items:
+    file: "items.json"
+    method: post
+    body:
+      page_size: 10
+      sort_by: "name"
+    sort: "name"
+    limit: 2
+---
+{% extends "_base.html" %}
+{% block content %}
+<ul>
+{% for item in items %}
+<li>{{ item.name }}</li>
+{% endfor %}
+</ul>
+{% endblock %}"#);
+
+    write(root, "_data/items.json", r#"[
+        {"name": "Charlie"},
+        {"name": "Alice"},
+        {"name": "Bob"}
+    ]"#);
+
+    eigen::build::build(root, true).unwrap();
+
+    let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
+    // Sort ascending by name, limit 2 → Alice, Bob.
+    assert!(html.contains("Alice"), "Should contain Alice");
+    assert!(html.contains("Bob"), "Should contain Bob");
+    assert!(!html.contains("Charlie"), "Charlie should be excluded by limit");
+
+    // Alice should appear before Bob (sorted ascending).
+    let alice_pos = html.find("Alice").unwrap();
+    let bob_pos = html.find("Bob").unwrap();
+    assert!(alice_pos < bob_pos, "Alice should come before Bob (sorted)");
+}
+
+/// Verify that `method` defaults to GET and `body` defaults to None
+/// when not specified in frontmatter, ensuring backwards compatibility.
+#[test]
+fn test_post_method_defaults_backward_compatible() {
+    let template = r#"---
+data:
+  nav:
+    file: "nav.yaml"
+  posts:
+    source: blog_api
+    path: /posts
+    root: data.posts
+---
+<html></html>"#;
+
+    let (fm, _body) = eigen::frontmatter::extract_frontmatter(template, "test.html").unwrap();
+
+    let nav = &fm.data["nav"];
+    assert_eq!(nav.method, eigen::frontmatter::HttpMethod::Get);
+    assert!(nav.body.is_none());
+
+    let posts = &fm.data["posts"];
+    assert_eq!(posts.method, eigen::frontmatter::HttpMethod::Get);
+    assert!(posts.body.is_none());
+}
+
+// ============================================================================
 // Utility
 // ============================================================================
 

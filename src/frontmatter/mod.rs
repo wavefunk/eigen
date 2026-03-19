@@ -281,13 +281,12 @@ pub fn parse_frontmatter(raw_yaml: &str, file_path: &str) -> Result<Frontmatter>
 
     let publish_date = match raw.publish_date {
         Some(ref s) => {
-            let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .wrap_err_with(|| {
-                    format!(
-                        "Invalid publish_date '{}' in {file_path} (expected YYYY-MM-DD)",
-                        s
-                    )
-                })?;
+            let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").wrap_err_with(|| {
+                format!(
+                    "Invalid publish_date '{}' in {file_path} (expected YYYY-MM-DD)",
+                    s
+                )
+            })?;
             Some(date)
         }
         None => None,
@@ -522,7 +521,10 @@ mod tests {
         assert_eq!(fm.seo.image.as_deref(), Some("/assets/about-hero.jpg"));
         assert_eq!(fm.seo.og_type.as_deref(), Some("website"));
         assert_eq!(fm.seo.twitter_card.as_deref(), Some("summary_large_image"));
-        assert_eq!(fm.seo.canonical_url.as_deref(), Some("https://example.com/about"));
+        assert_eq!(
+            fm.seo.canonical_url.as_deref(),
+            Some("https://example.com/about")
+        );
     }
 
     #[test]
@@ -644,7 +646,10 @@ mod tests {
         match &fm.schema {
             Some(SchemaConfigValue::Full(full)) => {
                 assert_eq!(full.author.as_deref(), Some("{{ post.author_name }}"));
-                assert_eq!(full.date_published.as_deref(), Some("{{ post.published_at }}"));
+                assert_eq!(
+                    full.date_published.as_deref(),
+                    Some("{{ post.published_at }}")
+                );
             }
             other => panic!("Expected Some(Full), got {:?}", other),
         }
@@ -682,11 +687,7 @@ mod tests {
 
     #[test]
     fn test_parse_method_defaults_to_get() {
-        let yaml = concat!(
-            "data:\n",
-            "  nav:\n",
-            "    file: \"nav.yaml\"\n",
-        );
+        let yaml = concat!("data:\n", "  nav:\n", "    file: \"nav.yaml\"\n",);
         let fm = parse_frontmatter(yaml, "test.html").unwrap();
         assert_eq!(fm.data["nav"].method, HttpMethod::Get);
     }

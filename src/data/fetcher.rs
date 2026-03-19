@@ -1,7 +1,7 @@
 //! Step 3.2: DataFetcher — fetch data from local files or remote sources with
 //! caching, root extraction, and transforms.
 
-use eyre::{Result, WrapErr, bail};
+use eyre::{bail, Result, WrapErr};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -106,10 +106,7 @@ impl DataFetcher {
         let content = std::fs::read_to_string(&full_path)
             .wrap_err_with(|| format!("Failed to read data file: {}", full_path.display()))?;
 
-        let ext = full_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let value: Value = match ext {
             "yaml" | "yml" => serde_yaml::from_str(&content)
@@ -138,18 +135,24 @@ impl DataFetcher {
         let source = self
             .sources
             .get(source_name)
-            .ok_or_else(|| eyre::eyre!(
-                "Source '{}' not found in site.toml. Available: {}",
-                source_name,
-                self.sources.keys().cloned().collect::<Vec<_>>().join(", ")
-            ))?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Source '{}' not found in site.toml. Available: {}",
+                    source_name,
+                    self.sources.keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })?
             .clone();
 
         // Build full URL: base URL + path.
         let full_url = format!(
             "{}{}",
             source.url.trim_end_matches('/'),
-            if path.starts_with('/') { path.to_string() } else { format!("/{}", path) }
+            if path.starts_with('/') {
+                path.to_string()
+            } else {
+                format!("/{}", path)
+            }
         );
 
         // Build cache key: include method (and body hash for POST).
@@ -203,9 +206,9 @@ impl DataFetcher {
             bail!("HTTP {} from {}", status, full_url);
         }
 
-        let value: Value = response.json().wrap_err_with(|| {
-            format!("Failed to parse JSON response from {}", full_url)
-        })?;
+        let value: Value = response
+            .json()
+            .wrap_err_with(|| format!("Failed to parse JSON response from {}", full_url))?;
 
         self.url_cache.insert(cache_key, value.clone());
         Ok(value)
@@ -511,14 +514,16 @@ mod tests {
 
     #[test]
     fn test_fetch_with_plugin_registry_transforms_data() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         #[derive(Debug)]
         struct AddFieldPlugin;
 
         impl Plugin for AddFieldPlugin {
-            fn name(&self) -> &str { "add_field" }
+            fn name(&self) -> &str {
+                "add_field"
+            }
 
             fn transform_data(
                 &self,
@@ -577,14 +582,16 @@ mod tests {
 
     #[test]
     fn test_fetch_plugin_runs_after_root_extraction() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         #[derive(Debug)]
         struct CountPlugin;
 
         impl Plugin for CountPlugin {
-            fn name(&self) -> &str { "count" }
+            fn name(&self) -> &str {
+                "count"
+            }
 
             fn transform_data(
                 &self,
@@ -625,15 +632,17 @@ mod tests {
 
     #[test]
     fn test_fetch_plugin_runs_before_filter_sort_limit() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         /// Plugin that adds a "status" field to all items.
         #[derive(Debug)]
         struct StatusPlugin;
 
         impl Plugin for StatusPlugin {
-            fn name(&self) -> &str { "status" }
+            fn name(&self) -> &str {
+                "status"
+            }
 
             fn transform_data(
                 &self,

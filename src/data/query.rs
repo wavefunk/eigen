@@ -7,7 +7,7 @@
 //!   an optional current item, resolves all `data` entries, and returns a
 //!   context map.
 
-use eyre::{Result, WrapErr, bail};
+use eyre::{bail, Result, WrapErr};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -84,13 +84,12 @@ pub fn resolve_item_data(
     let mut result = HashMap::new();
 
     for (name, query) in &frontmatter.data {
-        let interpolated = interpolate_query(query, item, item_as)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to interpolate data query '{}' for current item",
-                    name,
-                )
-            })?;
+        let interpolated = interpolate_query(query, item, item_as).wrap_err_with(|| {
+            format!(
+                "Failed to interpolate data query '{}' for current item",
+                name,
+            )
+        })?;
 
         // Verify the interpolated query doesn't still contain {{ }} patterns.
         verify_no_remaining_interpolation(&interpolated, name)?;
@@ -113,7 +112,13 @@ pub fn resolve_dynamic_page_data_for_item(
     fetcher: &mut DataFetcher,
     plugin_registry: Option<&PluginRegistry>,
 ) -> Result<HashMap<String, Value>> {
-    resolve_item_data(frontmatter, item, &frontmatter.item_as, fetcher, plugin_registry)
+    resolve_item_data(
+        frontmatter,
+        item,
+        &frontmatter.item_as,
+        fetcher,
+        plugin_registry,
+    )
 }
 
 /// Interpolate `{{ item_as.field }}` patterns in a DataQuery's filter values.
@@ -724,14 +729,16 @@ mod tests {
 
     #[test]
     fn test_resolve_page_data_with_plugin_registry() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         #[derive(Debug)]
         struct TagPlugin;
 
         impl Plugin for TagPlugin {
-            fn name(&self) -> &str { "tag" }
+            fn name(&self) -> &str {
+                "tag"
+            }
 
             fn transform_data(
                 &self,
@@ -781,14 +788,16 @@ mod tests {
 
     #[test]
     fn test_resolve_dynamic_page_data_with_plugin_registry() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         #[derive(Debug)]
         struct EnrichPlugin;
 
         impl Plugin for EnrichPlugin {
-            fn name(&self) -> &str { "enrich" }
+            fn name(&self) -> &str {
+                "enrich"
+            }
 
             fn transform_data(
                 &self,
@@ -967,14 +976,16 @@ mod tests {
 
     #[test]
     fn test_resolve_dynamic_page_data_for_item_with_plugin() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         #[derive(Debug)]
         struct PassthroughPlugin;
 
         impl Plugin for PassthroughPlugin {
-            fn name(&self) -> &str { "passthrough" }
+            fn name(&self) -> &str {
+                "passthrough"
+            }
         }
 
         let tmp = TempDir::new().unwrap();

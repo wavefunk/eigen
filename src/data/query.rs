@@ -139,6 +139,11 @@ fn interpolate_query(query: &DataQuery, item: &Value, item_as: &str) -> Result<D
         None => query.path.clone(),
     };
 
+    let new_body = match &query.body {
+        Some(body) => Some(interpolate_value(body, item, item_as)?),
+        None => None,
+    };
+
     Ok(DataQuery {
         file: query.file.clone(),
         source: query.source.clone(),
@@ -148,7 +153,7 @@ fn interpolate_query(query: &DataQuery, item: &Value, item_as: &str) -> Result<D
         limit: query.limit,
         filter: new_filter,
         method: query.method.clone(),
-        body: query.body.clone(),
+        body: new_body,
     })
 }
 
@@ -170,6 +175,57 @@ fn interpolate_string(template: &str, item: &Value, item_as: &str) -> Result<Str
     }
 
     Ok(result)
+}
+
+/// Recursively walk a `serde_json::Value` and interpolate `{{ item.field }}`
+/// patterns in string nodes. Also replaces `${ENV_VAR}` patterns.
+fn interpolate_value(value: &Value, item: &Value, item_as: &str) -> Result<Value> {
+    match value {
+        Value::String(s) => {
+            // First, interpolate {{ item.field }} patterns.
+            let resolved = interpolate_string(s, item, item_as)?;
+            // Then, interpolate ${ENV_VAR} patterns (fast-path: skip if no $ present).
+            let resolved = if resolved.contains("${") {
+                interpolate_env_in_string(&resolved)
+            } else {
+                resolved
+            };
+            Ok(Value::String(resolved))
+        }
+        Value::Array(arr) => {
+            let items: Result<Vec<Value>> = arr
+                .iter()
+                .map(|v| interpolate_value(v, item, item_as))
+                .collect();
+            Ok(Value::Array(items?))
+        }
+        Value::Object(map) => {
+            let mut result = serde_json::Map::new();
+            for (k, v) in map {
+                result.insert(k.clone(), interpolate_value(v, item, item_as)?);
+            }
+            Ok(Value::Object(result))
+        }
+        // Numbers, booleans, nulls are passed through unchanged.
+        other => Ok(other.clone()),
+    }
+}
+
+/// Replace `${VAR_NAME}` patterns with environment variable values.
+/// Unresolved patterns are left as-is (no error).
+fn interpolate_env_in_string(s: &str) -> String {
+    let re = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+    let mut result = s.to_string();
+    let captures: Vec<(String, String)> = re
+        .captures_iter(s)
+        .map(|cap| (cap[0].to_string(), cap[1].to_string()))
+        .collect();
+    for (full_match, var_name) in captures {
+        if let Ok(val) = std::env::var(&var_name) {
+            result = result.replace(&full_match, &val);
+        }
+    }
+    result
 }
 
 /// Resolve a dot-separated path like `"post.author_id"` against the current item.
@@ -247,6 +303,30 @@ fn type_name(value: &Value) -> &'static str {
     }
 }
 
+/// Check if any string node in a JSON value contains `{{ }}` patterns.
+fn value_contains_interpolation(value: &Value, re: &Regex) -> Option<String> {
+    match value {
+        Value::String(s) if re.is_match(s) => Some(s.clone()),
+        Value::Array(arr) => {
+            for v in arr {
+                if let Some(found) = value_contains_interpolation(v, re) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Object(map) => {
+            for v in map.values() {
+                if let Some(found) = value_contains_interpolation(v, re) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Verify that an interpolated DataQuery has no remaining `{{ }}` patterns.
 /// This prevents accidental multi-level interpolation.
 fn verify_no_remaining_interpolation(query: &DataQuery, query_name: &str) -> Result<()> {
@@ -277,6 +357,19 @@ fn verify_no_remaining_interpolation(query: &DataQuery, query_name: &str) -> Res
                  Nested interpolation (more than one level) is not supported.",
                 query_name,
                 path,
+            );
+        }
+    }
+
+    // Check body.
+    if let Some(ref body) = query.body {
+        if let Some(found) = value_contains_interpolation(body, &re) {
+            bail!(
+                "Data query '{}' still contains interpolation pattern in \
+                 body after resolution: \"{}\". \
+                 Nested interpolation (more than one level) is not supported.",
+                query_name,
+                found,
             );
         }
     }
@@ -738,6 +831,138 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert!(items[0]["enriched"].as_bool().unwrap());
         assert!(items[1]["enriched"].as_bool().unwrap());
+    }
+
+    // --- interpolate_query body tests ---
+
+    #[test]
+    fn test_interpolate_query_body_simple() {
+        let item = json!({"db_id": "abc123"});
+        let query = DataQuery {
+            source: Some("notion".into()),
+            path: Some("/v1/databases/abc123/query".into()),
+            method: crate::frontmatter::HttpMethod::Post,
+            body: Some(json!({
+                "filter": {
+                    "property": "Author",
+                    "rich_text": {
+                        "equals": "{{ post.db_id }}"
+                    }
+                }
+            })),
+            ..Default::default()
+        };
+
+        let result = interpolate_query(&query, &item, "post").unwrap();
+        let body = result.body.unwrap();
+        assert_eq!(body["filter"]["rich_text"]["equals"], "abc123");
+    }
+
+    #[test]
+    fn test_interpolate_query_body_no_patterns() {
+        let item = json!({"id": 1});
+        let query = DataQuery {
+            source: Some("api".into()),
+            method: crate::frontmatter::HttpMethod::Post,
+            body: Some(json!({"page_size": 100})),
+            ..Default::default()
+        };
+
+        let result = interpolate_query(&query, &item, "post").unwrap();
+        let body = result.body.unwrap();
+        assert_eq!(body["page_size"], 100);
+    }
+
+    #[test]
+    fn test_interpolate_query_body_none() {
+        let item = json!({"id": 1});
+        let query = DataQuery {
+            source: Some("api".into()),
+            method: crate::frontmatter::HttpMethod::Post,
+            body: None,
+            ..Default::default()
+        };
+
+        let result = interpolate_query(&query, &item, "post").unwrap();
+        assert!(result.body.is_none());
+    }
+
+    #[test]
+    fn test_interpolate_query_preserves_method() {
+        let item = json!({"id": 1});
+        let query = DataQuery {
+            source: Some("api".into()),
+            method: crate::frontmatter::HttpMethod::Post,
+            ..Default::default()
+        };
+
+        let result = interpolate_query(&query, &item, "post").unwrap();
+        assert_eq!(result.method, crate::frontmatter::HttpMethod::Post);
+    }
+
+    #[test]
+    fn test_interpolate_query_body_env_var() {
+        // SAFETY: This test runs single-threaded; no other thread reads this var.
+        unsafe { std::env::set_var("TEST_EIGEN_DB_ID", "db_abc123") };
+        let item = json!({});
+        let query = DataQuery {
+            source: Some("notion".into()),
+            method: crate::frontmatter::HttpMethod::Post,
+            body: Some(json!({"database_id": "${TEST_EIGEN_DB_ID}"})),
+            ..Default::default()
+        };
+        let result = interpolate_query(&query, &item, "item").unwrap();
+        assert_eq!(result.body.unwrap()["database_id"], "db_abc123");
+        // SAFETY: Cleanup; same reasoning as above.
+        unsafe { std::env::remove_var("TEST_EIGEN_DB_ID") };
+    }
+
+    #[test]
+    fn test_interpolate_query_body_unresolved_env_var_left_as_is() {
+        let item = json!({});
+        let query = DataQuery {
+            source: Some("api".into()),
+            method: crate::frontmatter::HttpMethod::Post,
+            body: Some(json!({"key": "${DEFINITELY_NOT_SET_EIGEN_TEST}"})),
+            ..Default::default()
+        };
+        let result = interpolate_query(&query, &item, "item").unwrap();
+        assert_eq!(
+            result.body.unwrap()["key"],
+            "${DEFINITELY_NOT_SET_EIGEN_TEST}"
+        );
+    }
+
+    // --- verify_no_remaining_interpolation body tests ---
+
+    #[test]
+    fn test_verify_remaining_in_body() {
+        let query = DataQuery {
+            method: crate::frontmatter::HttpMethod::Post,
+            body: Some(json!({
+                "filter": {
+                    "equals": "{{ nested.ref }}"
+                }
+            })),
+            ..Default::default()
+        };
+        let result = verify_no_remaining_interpolation(&query, "test");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("nested interpolation"));
+    }
+
+    #[test]
+    fn test_verify_clean_body() {
+        let query = DataQuery {
+            method: crate::frontmatter::HttpMethod::Post,
+            body: Some(json!({
+                "page_size": 100,
+                "filter": {"property": "Status"}
+            })),
+            ..Default::default()
+        };
+        assert!(verify_no_remaining_interpolation(&query, "test").is_ok());
     }
 
     #[test]

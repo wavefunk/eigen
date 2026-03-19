@@ -147,6 +147,8 @@ fn interpolate_query(query: &DataQuery, item: &Value, item_as: &str) -> Result<D
         sort: query.sort.clone(),
         limit: query.limit,
         filter: new_filter,
+        method: query.method.clone(),
+        body: query.body.clone(),
     })
 }
 

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::SourceConfig;
-use crate::frontmatter::DataQuery;
+use crate::frontmatter::{DataQuery, HttpMethod};
 use crate::plugins::registry::PluginRegistry;
 
 use super::transforms::apply_transforms;
@@ -53,7 +53,7 @@ impl DataFetcher {
         let query_path = query.path.as_deref();
 
         // Warn if body is set on a GET request — it will be ignored.
-        if matches!(query.method, crate::frontmatter::HttpMethod::Get) && query.body.is_some() {
+        if matches!(query.method, HttpMethod::Get) && query.body.is_some() {
             tracing::warn!(
                 "Data query has 'body' set but method is GET — body will be ignored. \
                  Did you mean to set method: post?"
@@ -129,7 +129,7 @@ impl DataFetcher {
         &mut self,
         source_name: &str,
         path: &str,
-        method: &crate::frontmatter::HttpMethod,
+        method: &HttpMethod,
         body: Option<&serde_json::Value>,
     ) -> Result<Value> {
         let source = self
@@ -157,8 +157,8 @@ impl DataFetcher {
 
         // Build cache key: include method (and body hash for POST).
         let cache_key = match method {
-            crate::frontmatter::HttpMethod::Get => format!("GET:{}", full_url),
-            crate::frontmatter::HttpMethod::Post => {
+            HttpMethod::Get => format!("GET:{}", full_url),
+            HttpMethod::Post => {
                 let body_hash = match body {
                     Some(b) => {
                         use std::collections::hash_map::DefaultHasher;
@@ -188,10 +188,10 @@ impl DataFetcher {
         }
 
         let response = match method {
-            crate::frontmatter::HttpMethod::Get => {
+            HttpMethod::Get => {
                 self.client.get(&full_url).headers(headers).send()
             }
-            crate::frontmatter::HttpMethod::Post => {
+            HttpMethod::Post => {
                 let mut req = self.client.post(&full_url).headers(headers);
                 if let Some(b) = body {
                     req = req.json(b);

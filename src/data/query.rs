@@ -11,6 +11,16 @@ use eyre::{bail, Result, WrapErr};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+static INTERPOLATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}").unwrap());
+
+static ENV_VAR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap());
+
+static REMAINING_INTERP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{.*?\}\}").unwrap());
 
 use crate::frontmatter::{DataQuery, Frontmatter};
 use crate::plugins::registry::PluginRegistry;
@@ -165,20 +175,14 @@ fn interpolate_query(query: &DataQuery, item: &Value, item_as: &str) -> Result<D
 /// Replace all `{{ item_as.field.subfield }}` patterns in a string with the
 /// corresponding value from the item.
 fn interpolate_string(template: &str, item: &Value, item_as: &str) -> Result<String> {
-    let re = Regex::new(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}").unwrap();
-
     let mut result = template.to_string();
-    let captures: Vec<(String, String)> = re
-        .captures_iter(template)
-        .map(|cap| (cap[0].to_string(), cap[1].to_string()))
-        .collect();
-
-    for (full_match, path) in captures {
-        let value = resolve_item_path(&path, item, item_as)?;
+    for cap in INTERPOLATION_RE.captures_iter(template) {
+        let full_match = cap[0].to_string();
+        let path = &cap[1];
+        let value = resolve_item_path(path, item, item_as)?;
         let replacement = value_to_string(&value);
         result = result.replace(&full_match, &replacement);
     }
-
     Ok(result)
 }
 
@@ -219,15 +223,12 @@ fn interpolate_value(value: &Value, item: &Value, item_as: &str) -> Result<Value
 /// Replace `${VAR_NAME}` patterns with environment variable values.
 /// Unresolved patterns are left as-is (no error).
 fn interpolate_env_in_string(s: &str) -> String {
-    let re = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
     let mut result = s.to_string();
-    let captures: Vec<(String, String)> = re
-        .captures_iter(s)
-        .map(|cap| (cap[0].to_string(), cap[1].to_string()))
-        .collect();
-    for (full_match, var_name) in captures {
-        if let Ok(val) = std::env::var(&var_name) {
-            result = result.replace(&full_match, &val);
+    for cap in ENV_VAR_RE.captures_iter(s) {
+        let full_match = &cap[0];
+        let var_name = &cap[1];
+        if let Ok(val) = std::env::var(var_name) {
+            result = result.replace(full_match, &val);
         }
     }
     result
@@ -335,7 +336,7 @@ fn value_contains_interpolation(value: &Value, re: &Regex) -> Option<String> {
 /// Verify that an interpolated DataQuery has no remaining `{{ }}` patterns.
 /// This prevents accidental multi-level interpolation.
 fn verify_no_remaining_interpolation(query: &DataQuery, query_name: &str) -> Result<()> {
-    let re = Regex::new(r"\{\{.*?\}\}").unwrap();
+    let re = &*REMAINING_INTERP_RE;
 
     // Check filter values.
     if let Some(ref filters) = query.filter {

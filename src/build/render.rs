@@ -67,7 +67,7 @@ pub fn build(project_root: &Path) -> Result<()> {
         config.build.fragments,
         &config.build.fragment_dir,
     )?;
-    output::copy_static_assets(project_root)?;
+    output::copy_static_assets(project_root, config.build.robots)?;
     tracing::info!("Copying static assets... ✓");
 
     // Set up template engine (with plugin extensions).
@@ -151,8 +151,10 @@ pub fn build(project_root: &Path) -> Result<()> {
     }
 
     // Generate sitemap.
-    sitemap::generate_sitemap(&dist_dir, &rendered_pages, &config, &build_time)?;
-    tracing::info!("Generating sitemap... ✓");
+    if config.build.sitemap {
+        sitemap::generate_sitemap(&dist_dir, &rendered_pages, &config, &build_time)?;
+        tracing::info!("Generating sitemap... ✓");
+    }
 
     // Run post-build hooks
     plugin_registry.post_build(&dist_dir, project_root)?;

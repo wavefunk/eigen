@@ -54,6 +54,12 @@ pub struct BuildConfig {
     /// `index.html` for directory requests. Default: false.
     #[serde(default)]
     pub clean_urls: bool,
+    /// Whether to generate `sitemap.xml` during build. Default: false.
+    #[serde(default)]
+    pub sitemap: bool,
+    /// Whether to copy `robots.txt` from `static/` to `dist/`. Default: false.
+    #[serde(default)]
+    pub robots: bool,
 }
 
 impl Default for BuildConfig {
@@ -65,6 +71,8 @@ impl Default for BuildConfig {
             oob_blocks: Vec::new(),
             minify: true,
             clean_urls: false,
+            sitemap: false,
+            robots: false,
         }
     }
 }

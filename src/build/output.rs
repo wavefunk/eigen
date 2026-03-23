@@ -38,7 +38,8 @@ pub fn setup_output_dir(project_root: &Path, fragments_enabled: bool, fragment_d
 ///
 /// Preserves directory structure: `static/css/style.css` → `dist/css/style.css`.
 /// If `static/` does not exist, this is a no-op.
-pub fn copy_static_assets(project_root: &Path) -> Result<()> {
+/// When `robots` is false, `robots.txt` is skipped.
+pub fn copy_static_assets(project_root: &Path, robots: bool) -> Result<()> {
     let static_dir = project_root.join("static");
     let dist_dir = project_root.join("dist");
 
@@ -58,6 +59,10 @@ pub fn copy_static_assets(project_root: &Path) -> Result<()> {
             std::fs::create_dir_all(&dst_path)
                 .wrap_err_with(|| format!("Failed to create directory {}", dst_path.display()))?;
         } else {
+            // Skip robots.txt if not enabled.
+            if !robots && rel_path == std::path::Path::new("robots.txt") {
+                continue;
+            }
             // Ensure parent directory exists.
             if let Some(parent) = dst_path.parent() {
                 std::fs::create_dir_all(parent)
@@ -143,7 +148,7 @@ mod tests {
         // Create dist/.
         fs::create_dir_all(root.join("dist")).unwrap();
 
-        copy_static_assets(root).unwrap();
+        copy_static_assets(root, true).unwrap();
 
         assert!(root.join("dist/css/style.css").exists());
         assert!(root.join("dist/js/app.js").exists());
@@ -160,7 +165,7 @@ mod tests {
         fs::create_dir_all(root.join("dist")).unwrap();
 
         // Should be a no-op, not an error.
-        copy_static_assets(root).unwrap();
+        copy_static_assets(root, true).unwrap();
     }
 
     #[test]
@@ -171,7 +176,7 @@ mod tests {
         write(root, "static/a/b/c/deep.txt", "deep");
         fs::create_dir_all(root.join("dist")).unwrap();
 
-        copy_static_assets(root).unwrap();
+        copy_static_assets(root, true).unwrap();
 
         assert!(root.join("dist/a/b/c/deep.txt").exists());
         let content = fs::read_to_string(root.join("dist/a/b/c/deep.txt")).unwrap();

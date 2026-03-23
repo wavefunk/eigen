@@ -230,8 +230,9 @@ fn render_static_page(
     let page_data = data::resolve_page_data(&page.frontmatter, fetcher, Some(plugin_registry))
         .wrap_err_with(|| format!("Failed to resolve data for template '{}'", tmpl_name))?;
 
-    let output_path = if config.build.clean_urls && page.template_path.file_stem().unwrap_or_default() != "index" {
-        page.output_dir.join(page.template_path.file_stem().unwrap_or_default()).join("index.html")
+    let stem = page.template_path.file_stem().unwrap_or_default();
+    let output_path = if config.build.clean_urls && stem != "index" && stem != "404" {
+        page.output_dir.join(stem).join("index.html")
     } else {
         page.output_dir.join(page.template_path.file_name().unwrap_or_default())
     };

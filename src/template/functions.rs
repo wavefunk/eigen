@@ -16,6 +16,7 @@ pub fn register_functions(env: &mut Environment<'_>, config: &SiteConfig) {
     let fragment_dir = config.build.fragment_dir.clone();
     let fragments_enabled = config.build.fragments;
     let content_block = config.build.content_block.clone();
+    let clean_urls = config.build.clean_urls;
 
     // link_to(path, target?, block?)
     env.add_function(
@@ -32,7 +33,7 @@ pub fn register_functions(env: &mut Environment<'_>, config: &SiteConfig) {
             }
 
             let block_name = block.unwrap_or(&content_block);
-            let fragment_path = compute_fragment_path(path, &fragment_dir, block_name);
+            let fragment_path = compute_fragment_path(path, &fragment_dir, block_name, clean_urls);
 
             format!(
                 r#"href="{path}" hx-get="{fragment_path}" hx-target="{target}" hx-push-url="{path}""#,
@@ -80,25 +81,28 @@ pub fn register_functions(env: &mut Environment<'_>, config: &SiteConfig) {
 ///
 /// The default content block uses the page filename directly. Non-default blocks
 /// get their own subdirectory.
-fn compute_fragment_path(page_path: &str, fragment_dir: &str, block: &str) -> String {
+fn compute_fragment_path(page_path: &str, fragment_dir: &str, block: &str, clean_urls: bool) -> String {
     let clean_path = page_path.trim_start_matches('/');
 
-    // Normalise directory-style URLs ("/about/" or "/about") to a stem ("about")
-    // and derive the equivalent .html path ("about/index.html" or "about.html").
-    let (stem, html_path) = if clean_path.ends_with('/') {
-        // "/about/" → stem="about", html_path="about/index.html"
-        let s = clean_path.trim_end_matches('/');
-        (s, format!("{}/index.html", s))
+    // Derive the stem (e.g. "about") regardless of URL style.
+    let stem = if clean_path.ends_with('/') {
+        clean_path.trim_end_matches('/')
     } else if clean_path.is_empty() {
-        // "/" → root index
-        ("index", "index.html".to_string())
+        "index"
     } else if let Some(s) = clean_path.strip_suffix(".html") {
-        // "/about.html" → stem="about", html_path="about.html"
-        (s, clean_path.to_string())
+        s
     } else {
-        // "/about" (no trailing slash, no extension) — treat as directory
-        let s = clean_path;
-        (s, format!("{}/index.html", s))
+        clean_path
+    };
+
+    // The html_path is where the fragment file lives on disk, mirroring
+    // the output_path structure chosen by the clean_urls flag.
+    let html_path = if stem == "index" {
+        "index.html".to_string()
+    } else if clean_urls {
+        format!("{}/index.html", stem)
+    } else {
+        format!("{}.html", stem)
     };
 
     // For the default content block, the fragment file mirrors the html path.

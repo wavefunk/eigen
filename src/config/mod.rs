@@ -54,12 +54,12 @@ pub struct BuildConfig {
     /// `index.html` for directory requests. Default: false.
     #[serde(default)]
     pub clean_urls: bool,
-    /// Whether to generate `sitemap.xml` during build. Default: false.
+    /// Sitemap generation configuration.
     #[serde(default)]
-    pub sitemap: bool,
-    /// Whether to copy `robots.txt` from `static/` to `dist/`. Default: false.
+    pub sitemap: SitemapConfig,
+    /// Robots.txt generation configuration.
     #[serde(default)]
-    pub robots: bool,
+    pub robots: RobotsConfig,
 }
 
 impl Default for BuildConfig {
@@ -71,9 +71,50 @@ impl Default for BuildConfig {
             oob_blocks: Vec::new(),
             minify: true,
             clean_urls: false,
-            sitemap: false,
-            robots: false,
+            sitemap: SitemapConfig::default(),
+            robots: RobotsConfig::default(),
         }
+    }
+}
+
+/// Sitemap generation configuration.
+///
+/// Located under `[build.sitemap]` in site.toml.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SitemapConfig {
+    /// Whether to generate `sitemap.xml`. Default: true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Whether to use clean URLs in the sitemap (e.g. `/about/` instead of
+    /// `/about.html`). Default: false.
+    #[serde(default)]
+    pub clean_urls: bool,
+}
+
+impl Default for SitemapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            clean_urls: false,
+        }
+    }
+}
+
+/// Robots.txt generation configuration.
+///
+/// Located under `[build.robots]` in site.toml.
+/// When `enabled = true` and `static/robots.txt` exists it is copied to
+/// `dist/robots.txt`. Otherwise a sensible default is generated.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RobotsConfig {
+    /// Whether to generate `robots.txt`. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for RobotsConfig {
+    fn default() -> Self {
+        Self { enabled: false }
     }
 }
 

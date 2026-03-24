@@ -21,6 +21,7 @@ use super::context::{self, PageMeta};
 use super::fragments;
 use super::minify;
 use super::output;
+use super::robots;
 use super::sitemap;
 
 /// A record of a rendered page, used for sitemap generation.
@@ -67,7 +68,7 @@ pub fn build(project_root: &Path) -> Result<()> {
         config.build.fragments,
         &config.build.fragment_dir,
     )?;
-    output::copy_static_assets(project_root, config.build.robots)?;
+    output::copy_static_assets(project_root)?;
     tracing::info!("Copying static assets... ✓");
 
     // Set up template engine (with plugin extensions).
@@ -151,9 +152,14 @@ pub fn build(project_root: &Path) -> Result<()> {
     }
 
     // Generate sitemap.
-    if config.build.sitemap {
+    if config.build.sitemap.enabled {
         sitemap::generate_sitemap(&dist_dir, &rendered_pages, &config, &build_time)?;
         tracing::info!("Generating sitemap... ✓");
+    }
+
+    // Generate robots.txt.
+    if config.build.robots.enabled {
+        robots::write(project_root, &dist_dir)?;
     }
 
     // Run post-build hooks
@@ -1334,5 +1340,175 @@ fragments = false
         let err = format!("{:#}", result.unwrap_err());
         assert!(err.contains("site.toml"));
         assert!(err.contains("eigen init"));
+    }
+
+    // --- Sitemap config tests ---
+
+    #[test]
+    fn test_sitemap_enabled_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        setup_minimal_project(root);
+        build(root).unwrap();
+        assert!(root.join("dist/sitemap.xml").exists());
+    }
+
+    #[test]
+    fn test_sitemap_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+
+[build.sitemap]
+enabled = false
+"#,
+        );
+        write(root, "templates/_base.html", "<html>{% block content %}{% endblock %}</html>");
+        write(root, "templates/index.html", "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}");
+
+        build(root).unwrap();
+        assert!(!root.join("dist/sitemap.xml").exists());
+    }
+
+    #[test]
+    fn test_sitemap_clean_urls() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+
+[build.sitemap]
+enabled = true
+clean_urls = true
+"#,
+        );
+        write(root, "templates/_base.html", "<html>{% block content %}{% endblock %}</html>");
+        write(root, "templates/index.html", "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}");
+        write(root, "templates/about.html", "{% extends \"_base.html\" %}{% block content %}about{% endblock %}");
+
+        build(root).unwrap();
+
+        let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
+        assert!(sitemap.contains("https://test.com/"));
+        assert!(sitemap.contains("https://test.com/about/"));
+        assert!(!sitemap.contains(".html"));
+    }
+
+    // --- Robots config tests ---
+
+    #[test]
+    fn test_robots_disabled_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        setup_minimal_project(root);
+        build(root).unwrap();
+        assert!(!root.join("dist/robots.txt").exists());
+    }
+
+    #[test]
+    fn test_robots_generates_default() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+
+[build.robots]
+enabled = true
+"#,
+        );
+        write(root, "templates/_base.html", "<html>{% block content %}{% endblock %}</html>");
+        write(root, "templates/index.html", "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}");
+
+        build(root).unwrap();
+
+        let robots = fs::read_to_string(root.join("dist/robots.txt")).unwrap();
+        assert!(robots.contains("User-agent: *"));
+        assert!(robots.contains("Allow: /"));
+    }
+
+    #[test]
+    fn test_robots_copies_custom_from_static() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+
+[build.robots]
+enabled = true
+"#,
+        );
+        write(root, "templates/_base.html", "<html>{% block content %}{% endblock %}</html>");
+        write(root, "templates/index.html", "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}");
+        write(root, "static/robots.txt", "User-agent: *\nDisallow: /secret/\n");
+
+        build(root).unwrap();
+
+        let robots = fs::read_to_string(root.join("dist/robots.txt")).unwrap();
+        assert!(robots.contains("Disallow: /secret/"));
+        assert!(!robots.contains("Allow: /"));
+    }
+
+    #[test]
+    fn test_robots_not_copied_from_static_when_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+"#,
+        );
+        write(root, "templates/_base.html", "<html>{% block content %}{% endblock %}</html>");
+        write(root, "templates/index.html", "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}");
+        write(root, "static/robots.txt", "User-agent: *\nDisallow: /\n");
+
+        build(root).unwrap();
+
+        // robots disabled by default — file should not appear in dist even if in static/
+        assert!(!root.join("dist/robots.txt").exists());
     }
 }

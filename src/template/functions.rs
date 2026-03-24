@@ -159,49 +159,49 @@ mod tests {
 
     #[test]
     fn test_fragment_path_content_block() {
-        let result = compute_fragment_path("/about.html", "_fragments", "content");
+        let result = compute_fragment_path("/about.html", "_fragments", "content", false);
         assert_eq!(result, "/_fragments/about.html");
     }
 
     #[test]
     fn test_fragment_path_nested() {
-        let result = compute_fragment_path("/posts/my-post.html", "_fragments", "content");
+        let result = compute_fragment_path("/posts/my-post.html", "_fragments", "content", false);
         assert_eq!(result, "/_fragments/posts/my-post.html");
     }
 
     #[test]
     fn test_fragment_path_non_content_block() {
-        let result = compute_fragment_path("/about.html", "_fragments", "sidebar");
+        let result = compute_fragment_path("/about.html", "_fragments", "sidebar", false);
         assert_eq!(result, "/_fragments/about/sidebar.html");
     }
 
     #[test]
     fn test_fragment_path_no_leading_slash() {
-        let result = compute_fragment_path("about.html", "_fragments", "content");
+        let result = compute_fragment_path("about.html", "_fragments", "content", false);
         assert_eq!(result, "/_fragments/about.html");
     }
 
     #[test]
     fn test_fragment_path_directory_trailing_slash() {
-        let result = compute_fragment_path("/about/", "_fragments", "content");
+        let result = compute_fragment_path("/about/", "_fragments", "content", false);
         assert_eq!(result, "/_fragments/about/index.html");
     }
 
     #[test]
     fn test_fragment_path_directory_no_trailing_slash() {
-        let result = compute_fragment_path("/about", "_fragments", "content");
+        let result = compute_fragment_path("/about", "_fragments", "content", false);
         assert_eq!(result, "/_fragments/about/index.html");
     }
 
     #[test]
     fn test_fragment_path_directory_non_content_block() {
-        let result = compute_fragment_path("/about/", "_fragments", "sidebar");
+        let result = compute_fragment_path("/about/", "_fragments", "sidebar", false);
         assert_eq!(result, "/_fragments/about/sidebar.html");
     }
 
     #[test]
     fn test_fragment_path_nested_directory() {
-        let result = compute_fragment_path("/case-study/flipkart/", "_fragments", "content");
+        let result = compute_fragment_path("/case-study/flipkart/", "_fragments", "content", false);
         assert_eq!(result, "/_fragments/case-study/flipkart/index.html");
     }
 

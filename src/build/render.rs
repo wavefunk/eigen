@@ -26,6 +26,7 @@ use super::fragments;
 use super::hints;
 use super::json_ld;
 use super::minify;
+use super::not_found;
 use super::output;
 use super::robots;
 use super::seo;
@@ -216,6 +217,11 @@ pub fn build(project_root: &Path, dev: bool) -> Result<()> {
                 rendered_pages.extend(results);
             }
         }
+    }
+
+    // Generate 404 page (default or custom template, controlled by not_found flag).
+    if config.build.not_found {
+        not_found::write_default_if_missing(project_root, &dist_dir)?;
     }
 
     // Generate sitemap.

@@ -6,6 +6,7 @@ base_url = "https://example.com"
 fragments = true
 fragment_dir = "_fragments"
 content_block = "content"
+not_found = true
 
 [sources.blog_api]
 url = "https://jsonplaceholder.typicode.com"

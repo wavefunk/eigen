@@ -1607,6 +1607,230 @@ optimize = false
 }
 
 // ============================================================================
+// 404 / not_found feature
+// ============================================================================
+
+/// When `not_found = true` and no `templates/404.html` exists, a built-in
+/// default page should be written to `dist/404.html`.
+#[test]
+fn test_not_found_writes_default_when_no_template() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "404 Default Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+not_found = true
+"#);
+
+    write(root, "templates/index.html", "<h1>Home</h1>");
+
+    eigen::build::build(root).unwrap();
+
+    let path_404 = root.join("dist/404.html");
+    assert!(path_404.exists(), "dist/404.html should be created by default");
+
+    let html = fs::read_to_string(&path_404).unwrap();
+    assert!(html.contains("<!DOCTYPE html>"), "Default 404 should be a full HTML page");
+    assert!(html.contains("404"), "Default 404 should contain the number 404");
+    assert!(html.contains("Page Not Found"), "Default 404 should mention 'Page Not Found'");
+    assert!(html.contains(r#"href="/""#), "Default 404 should link back to home");
+}
+
+/// When `not_found = false` (default), no `dist/404.html` should be created
+/// even if a `templates/404.html` template exists.
+#[test]
+fn test_not_found_flag_disabled_suppresses_404_page() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "404 Disabled Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+not_found = false
+"#);
+
+    write(root, "templates/index.html", "<h1>Home</h1>");
+
+    eigen::build::build(root).unwrap();
+
+    assert!(
+        !root.join("dist/404.html").exists(),
+        "dist/404.html should NOT exist when not_found = false"
+    );
+}
+
+/// When `not_found = true` and `templates/404.html` exists, the custom template
+/// is rendered instead of the built-in default.
+#[test]
+fn test_not_found_custom_template_overrides_default() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "Custom 404 Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+not_found = true
+"#);
+
+    write(root, "templates/_base.html",
+          "<!DOCTYPE html><html><body>{% block content %}{% endblock %}</body></html>");
+
+    // Custom 404 template.
+    write(root, "templates/404.html", r#"{% extends "_base.html" %}
+{% block content %}<h1>Custom Error Page</h1><p>My bespoke 404.</p>{% endblock %}"#);
+
+    write(root, "templates/index.html", r#"{% extends "_base.html" %}
+{% block content %}<h1>Home</h1>{% endblock %}"#);
+
+    eigen::build::build(root).unwrap();
+
+    let path_404 = root.join("dist/404.html");
+    assert!(path_404.exists(), "dist/404.html should exist");
+
+    let html = fs::read_to_string(&path_404).unwrap();
+    assert!(
+        html.contains("Custom Error Page"),
+        "Custom template content should be rendered"
+    );
+    assert!(
+        html.contains("My bespoke 404."),
+        "Custom template body should be in output"
+    );
+    // The built-in default text should NOT appear.
+    assert!(
+        !html.contains("Page Not Found"),
+        "Default 404 text should NOT appear when custom template is used"
+    );
+}
+
+/// The default 404 page is not included in sitemap.xml since it is a special
+/// error page (not a regular content page).
+#[test]
+fn test_not_found_default_excluded_from_sitemap() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "404 Sitemap Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+not_found = true
+sitemap = true
+"#);
+
+    write(root, "templates/index.html", "<h1>Home</h1>");
+    write(root, "templates/about.html", "<h1>About</h1>");
+
+    eigen::build::build(root).unwrap();
+
+    let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
+    // The default 404 page (written directly, not via template rendering) must
+    // NOT appear in sitemap.
+    assert!(
+        !sitemap.contains("404.html"),
+        "dist/404.html (default) should NOT be in sitemap.xml"
+    );
+}
+
+/// With `clean_urls = true`, 404.html must still be written as `dist/404.html`
+/// (not `dist/404/index.html`) so the hosting server can serve it correctly.
+#[test]
+fn test_not_found_clean_urls_does_not_affect_404_path() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    write(root, "site.toml", r#"
+[site]
+name = "Clean URL 404 Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+not_found = true
+clean_urls = true
+"#);
+
+    write(root, "templates/_base.html",
+          "<!DOCTYPE html><html><body>{% block content %}{% endblock %}</body></html>");
+
+    write(root, "templates/index.html", r#"{% extends "_base.html" %}
+{% block content %}<h1>Home</h1>{% endblock %}"#);
+
+    // Custom 404 template to also verify the rendered path is correct.
+    write(root, "templates/404.html", r#"{% extends "_base.html" %}
+{% block content %}<h1>Custom 404</h1>{% endblock %}"#);
+
+    eigen::build::build(root).unwrap();
+
+    // With clean_urls: index goes to index.html, about goes to about/index.html.
+    assert!(root.join("dist/index.html").exists(), "index.html should stay as-is");
+    assert!(
+        !root.join("dist/about").exists(),
+        "no about/ dir in this build"
+    );
+
+    // The 404 page must always be dist/404.html regardless of clean_urls.
+    assert!(
+        root.join("dist/404.html").exists(),
+        "dist/404.html must exist at root even with clean_urls"
+    );
+    assert!(
+        !root.join("dist/404/index.html").exists(),
+        "dist/404/index.html must NOT exist — 404 is exempt from clean_urls"
+    );
+}
+
+/// The full example site build should include a rendered `dist/404.html`
+/// (using the custom template added to example_site/templates/404.html).
+#[test]
+fn test_full_build_example_site_includes_404() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let example_site = manifest_dir.join("example_site");
+
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    copy_dir_all(&example_site, root);
+
+    // Disable minification for readable assertions.
+    let site_toml = fs::read_to_string(root.join("site.toml")).unwrap();
+    let site_toml = site_toml.replace("[build]", "[build]\nminify = false");
+    fs::write(root.join("site.toml"), site_toml).unwrap();
+
+    eigen::build::build(root).unwrap();
+
+    let path_404 = root.join("dist/404.html");
+    assert!(path_404.exists(), "dist/404.html should be built from example_site template");
+
+    let html = fs::read_to_string(&path_404).unwrap();
+    // The example_site 404 template extends _base.html and uses the site name.
+    assert!(html.contains("<!DOCTYPE html>"), "Should be a full HTML page via layout");
+    assert!(html.contains("404"), "Should mention 404");
+    // Site name from _base.html should appear.
+    assert!(html.contains("Example Site"), "Layout should inject site name");
+}
+
+// ============================================================================
 // Utility
 // ============================================================================
 

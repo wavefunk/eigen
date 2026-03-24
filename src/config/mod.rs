@@ -82,6 +82,13 @@ pub struct BuildConfig {
     /// View Transitions API configuration.
     #[serde(default)]
     pub view_transitions: ViewTransitionsConfig,
+    /// Whether to generate a `404.html` page. When enabled and no `404.html`
+    /// template exists in `templates/`, a built-in default page is written to
+    /// `dist/404.html`. If a `404.html` template exists it is rendered normally
+    /// and this flag just controls whether the feature is active at all.
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub not_found: bool,
 }
 
 impl Default for BuildConfig {
@@ -97,6 +104,7 @@ impl Default for BuildConfig {
             content_hash: ContentHashConfig::default(),
             bundling: BundlingConfig::default(),
             view_transitions: ViewTransitionsConfig::default(),
+            not_found: true,
         }
     }
 }

@@ -11,6 +11,7 @@ pub mod fragments;
 pub mod hints;
 pub mod json_ld;
 pub mod minify;
+pub mod not_found;
 pub mod output;
 pub mod render;
 pub mod robots;

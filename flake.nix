@@ -51,6 +51,7 @@
               dolt
               beads-latest
               cargo-dist
+              uv
             ];
 
             buildInputs = [

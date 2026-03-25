@@ -117,15 +117,21 @@ fn filter_slugify(value: &str) -> String {
 /// to the previous word boundary (space). If there's no space at all, we just
 /// cut at `length`.
 fn filter_truncate(value: &str, length: usize) -> String {
-    if value.len() <= length {
+    let char_count = value.chars().count();
+    if char_count <= length {
         return value.to_string();
     }
 
-    let end = length.min(value.len());
+    // Find the byte offset of the `length`-th character.
+    let end = value
+        .char_indices()
+        .nth(length)
+        .map(|(i, _)| i)
+        .unwrap_or(value.len());
 
-    // If we're exactly at a word boundary (next char is space, or end is a
-    // space), just take everything up to `end`.
-    let at_boundary = value.as_bytes().get(end).map(|&b| b == b' ').unwrap_or(true);
+    // If we're exactly at a word boundary (next char is space, or end of
+    // string), just take everything up to `end`.
+    let at_boundary = value[end..].starts_with(' ') || end == value.len();
     let break_pos = if at_boundary {
         end
     } else {
@@ -433,5 +439,68 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["key"], "value");
         assert_eq!(parsed["num"], 42);
+    }
+
+    // --- property-based tests (hegeltest) ---
+
+    use hegel::generators;
+
+    #[hegel::test]
+    fn prop_slugify_idempotence(tc: hegel::TestCase) {
+        let s: String = tc.draw(generators::text());
+        let once = filter_slugify(&s);
+        let twice = filter_slugify(&once);
+        assert_eq!(
+            once, twice,
+            "filter_slugify is not idempotent for input {s:?}"
+        );
+    }
+
+    #[hegel::test]
+    fn prop_slugify_output_charset(tc: hegel::TestCase) {
+        let s: String = tc.draw(generators::text());
+        let result = filter_slugify(&s);
+        for ch in result.chars() {
+            assert!(
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-',
+                "filter_slugify({s:?}) contains invalid char {ch:?}"
+            );
+        }
+    }
+
+    #[hegel::test]
+    fn prop_slugify_robustness(tc: hegel::TestCase) {
+        let s: String = tc.draw(generators::text());
+        let _ = filter_slugify(&s);
+    }
+
+    #[hegel::test]
+    fn prop_truncate_no_truncation_passthrough(tc: hegel::TestCase) {
+        let value: String = tc.draw(generators::text().max_size(50));
+        let length: usize = tc.draw(generators::integers::<usize>().min_value(50).max_value(200));
+        assert_eq!(
+            filter_truncate(&value, length),
+            value,
+            "filter_truncate should pass through when value.len() <= length"
+        );
+    }
+
+    #[hegel::test]
+    fn prop_truncate_ends_with_ellipsis(tc: hegel::TestCase) {
+        let value: String = tc.draw(generators::text().min_size(20).max_size(200));
+        let length: usize = tc.draw(generators::integers::<usize>().min_value(1).max_value(19));
+        if value.len() > length {
+            let result = filter_truncate(&value, length);
+            assert!(
+                result.ends_with("..."),
+                "filter_truncate({value:?}, {length}) = {result:?} does not end with '...'"
+            );
+        }
+    }
+
+    #[hegel::test]
+    fn prop_markdown_robustness(tc: hegel::TestCase) {
+        let s: String = tc.draw(generators::text());
+        let _ = filter_markdown(&s);
     }
 }

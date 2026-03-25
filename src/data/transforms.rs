@@ -346,4 +346,121 @@ mod tests {
         let result = apply_transforms(data.clone(), &None, &None, &None);
         assert_eq!(result, data);
     }
+
+    // ── Hegeltest property-based tests ──────────────────────────────────
+
+    use hegel::generators::{self, Generator};
+
+    fn gen_json_array(tc: &hegel::TestCase) -> serde_json::Value {
+        let len = tc.draw(generators::integers::<usize>().max_value(20));
+        let items: Vec<serde_json::Value> = (0..len)
+            .map(|_| {
+                let v = tc.draw(generators::integers::<i64>());
+                json!({"val": v})
+            })
+            .collect();
+        serde_json::Value::Array(items)
+    }
+
+    fn gen_non_array_json(tc: &hegel::TestCase) -> serde_json::Value {
+        tc.draw(hegel::one_of!(
+            generators::text().max_size(50).map(|s| json!(s)),
+            generators::integers::<i64>().map(|n| json!(n)),
+            generators::booleans().map(|b| json!(b)),
+            generators::just(()).map(|_| json!(null)),
+            generators::text().max_size(20).map(|s| json!({"key": s}))
+        ))
+    }
+
+    #[hegel::test]
+    fn prop_sort_preserves_length(tc: hegel::TestCase) {
+        let data = gen_json_array(&tc);
+        let original_len = data.as_array().map_or(0, |a| a.len());
+        let sorted = apply_sort(data, "val");
+        let sorted_len = sorted.as_array().map_or(0, |a| a.len());
+        assert_eq!(original_len, sorted_len);
+    }
+
+    #[hegel::test]
+    fn prop_sort_idempotent(tc: hegel::TestCase) {
+        let data = gen_json_array(&tc);
+        let once = apply_sort(data, "val");
+        let twice = apply_sort(once.clone(), "val");
+        assert_eq!(once, twice);
+    }
+
+    #[hegel::test]
+    fn prop_sort_non_array_passthrough(tc: hegel::TestCase) {
+        let data = gen_non_array_json(&tc);
+        let result = apply_sort(data.clone(), "val");
+        assert_eq!(data, result);
+    }
+
+    #[hegel::test]
+    fn prop_filter_subset(tc: hegel::TestCase) {
+        let data = gen_json_array(&tc);
+        let original_len = data.as_array().map_or(0, |a| a.len());
+        let threshold = tc.draw(generators::integers::<i64>());
+        let mut filters = HashMap::new();
+        filters.insert("val".into(), threshold.to_string());
+        let filtered = apply_filter(data, &filters);
+        let filtered_len = filtered.as_array().map_or(0, |a| a.len());
+        assert!(filtered_len <= original_len);
+    }
+
+    #[hegel::test]
+    fn prop_filter_correctness(tc: hegel::TestCase) {
+        let data = gen_json_array(&tc);
+        let threshold = tc.draw(generators::integers::<i64>());
+        let mut filters = HashMap::new();
+        filters.insert("val".into(), threshold.to_string());
+        let filtered = apply_filter(data, &filters);
+        if let Some(arr) = filtered.as_array() {
+            for item in arr {
+                assert!(
+                    value_matches_string(item.get("val").unwrap(), &threshold.to_string()),
+                    "filtered item {:?} does not match filter val={}",
+                    item,
+                    threshold,
+                );
+            }
+        }
+    }
+
+    #[hegel::test]
+    fn prop_filter_non_array_passthrough(tc: hegel::TestCase) {
+        let data = gen_non_array_json(&tc);
+        let filters = HashMap::new();
+        let result = apply_filter(data.clone(), &filters);
+        assert_eq!(data, result);
+    }
+
+    #[hegel::test]
+    fn prop_limit_bound(tc: hegel::TestCase) {
+        let data = gen_json_array(&tc);
+        let original_len = data.as_array().map_or(0, |a| a.len());
+        let n = tc.draw(generators::integers::<usize>().max_value(30));
+        let limited = apply_limit(data, n);
+        let limited_len = limited.as_array().map_or(0, |a| a.len());
+        assert!(limited_len <= n.min(original_len));
+    }
+
+    #[hegel::test]
+    fn prop_limit_prefix(tc: hegel::TestCase) {
+        let data = gen_json_array(&tc);
+        let n = tc.draw(generators::integers::<usize>().max_value(30));
+        let original_arr = data.as_array().cloned().unwrap_or_default();
+        let limited = apply_limit(data, n);
+        let limited_arr = limited.as_array().cloned().unwrap_or_default();
+        assert_eq!(limited_arr, &original_arr[..limited_arr.len()]);
+    }
+
+    #[hegel::test]
+    fn prop_limit_idempotent(tc: hegel::TestCase) {
+        let data = gen_json_array(&tc);
+        let n = tc.draw(generators::integers::<usize>().max_value(30));
+        let once = apply_limit(data, n);
+        let twice = apply_limit(once.clone(), n);
+        assert_eq!(once, twice);
+    }
 }

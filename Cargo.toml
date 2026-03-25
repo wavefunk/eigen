@@ -50,6 +50,7 @@ walkdir = "2.5.0"
 
 [dev-dependencies]
 tempfile = "3"
+hegel = { git = "https://github.com/hegeldev/hegel-rust", package = "hegeltest" }
 
 # The profile that 'dist' will build with
 [profile.dist]

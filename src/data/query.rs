@@ -1019,4 +1019,32 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result["sidebar"].is_array());
     }
+
+    // --- Hegel property-based tests ---
+
+    use hegel::generators;
+
+    #[hegel::test]
+    fn prop_interpolate_string_no_pattern_passthrough(tc: hegel::TestCase) {
+        let s: String = tc.draw(generators::text());
+        tc.assume(!s.contains("{{"));
+        let item = json!({"id": 1});
+        let result = interpolate_string(&s, &item, "item").unwrap();
+        assert_eq!(result, s);
+    }
+
+    #[hegel::test]
+    fn prop_interpolate_string_robustness(tc: hegel::TestCase) {
+        let s: String = tc.draw(generators::text());
+        let item = json!({"id": 1});
+        let _ = interpolate_string(&s, &item, "item");
+    }
+
+    #[hegel::test]
+    fn prop_value_to_string_roundtrip_integers(tc: hegel::TestCase) {
+        let n: i64 = tc.draw(generators::integers());
+        let s = value_to_string(&Value::Number(serde_json::Number::from(n)));
+        let parsed: i64 = s.parse().unwrap();
+        assert_eq!(parsed, n);
+    }
 }

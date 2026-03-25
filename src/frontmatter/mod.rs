@@ -326,6 +326,7 @@ pub fn extract_frontmatter<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators;
 
     // --- split_frontmatter tests ---
 
@@ -765,5 +766,45 @@ mod tests {
         let yaml = "publish_date: \"not-a-date\"\n";
         let result = parse_frontmatter(yaml, "test.html");
         assert!(result.is_err());
+    }
+
+    // --- Property-based tests (hegeltest) ---
+
+    #[hegel::test]
+    fn split_frontmatter_never_panics(tc: hegel::TestCase) {
+        let input = tc.draw(generators::text());
+        let _ = split_frontmatter(&input);
+    }
+
+    #[hegel::test]
+    fn split_frontmatter_no_frontmatter_passthrough(tc: hegel::TestCase) {
+        let suffix = tc.draw(generators::text());
+        let input = format!("a{suffix}");
+        let (yaml, body) = split_frontmatter(&input);
+        assert!(yaml.is_none());
+        assert_eq!(body, input);
+    }
+
+    #[hegel::test]
+    fn split_frontmatter_body_length_bounded(tc: hegel::TestCase) {
+        let input = tc.draw(generators::text());
+        let (_yaml, body) = split_frontmatter(&input);
+        assert!(body.len() <= input.len());
+    }
+
+    #[hegel::test]
+    fn parse_frontmatter_never_panics(tc: hegel::TestCase) {
+        let input = tc.draw(generators::text());
+        let _ = parse_frontmatter(&input, "prop_test.html");
+    }
+
+    #[hegel::test]
+    fn split_frontmatter_round_trip_structure(tc: hegel::TestCase) {
+        let yaml_part = tc.draw(generators::from_regex(r"[a-z]+: [a-z]+"));
+        let body_part = tc.draw(generators::text().max_size(100));
+        let input = format!("---\n{yaml_part}\n---\n{body_part}");
+        let (yaml, body) = split_frontmatter(&input);
+        assert_eq!(yaml, Some(yaml_part.as_str()));
+        assert_eq!(body, body_part);
     }
 }

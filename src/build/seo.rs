@@ -421,6 +421,7 @@ pub fn resolve_seo_expressions(
 mod tests {
     use super::*;
     use crate::config::{SiteSchemaConfig, SiteSeoConfig};
+    use hegel::generators;
 
     /// Build a minimal SiteMeta for testing.
     fn test_site(name: &str, base_url: &str) -> SiteMeta {
@@ -929,5 +930,66 @@ mod tests {
         assert!(resolved.title.is_none());
         // Static field unaffected.
         assert_eq!(resolved.description.as_deref(), Some("Static fallback"));
+    }
+
+    // --- property-based tests (hegeltest) ---
+
+    #[hegel::test]
+    fn escape_attr_no_bare_specials(tc: hegel::TestCase) {
+        let s = tc.draw(generators::text());
+        let escaped = escape_attr(&s);
+        let cleaned = escaped
+            .replace("&amp;", "")
+            .replace("&quot;", "")
+            .replace("&lt;", "")
+            .replace("&gt;", "");
+        assert!(!cleaned.contains('&'), "bare '&' found in: {escaped}");
+        assert!(!cleaned.contains('"'), "bare '\"' found in: {escaped}");
+        assert!(!cleaned.contains('<'), "bare '<' found in: {escaped}");
+        assert!(!cleaned.contains('>'), "bare '>' found in: {escaped}");
+    }
+
+    #[hegel::test]
+    fn escape_attr_monotonic_length(tc: hegel::TestCase) {
+        let s = tc.draw(generators::text());
+        assert!(
+            escape_attr(&s).len() >= s.len(),
+            "escaped output shorter than input for: {s:?}"
+        );
+    }
+
+    #[hegel::test]
+    fn escape_attr_no_crash(tc: hegel::TestCase) {
+        let s = tc.draw(generators::text());
+        let _ = escape_attr(&s);
+    }
+
+    #[hegel::test]
+    fn make_absolute_url_idempotent_for_absolute(tc: hegel::TestCase) {
+        let url = tc.draw(generators::urls());
+        let base = tc.draw(generators::urls());
+        assert_eq!(
+            make_absolute_url(&url, &base),
+            url,
+            "absolute URL was modified: url={url:?}, base={base:?}"
+        );
+    }
+
+    #[hegel::test]
+    fn make_absolute_url_no_double_slash(tc: hegel::TestCase) {
+        let raw_suffix = tc.draw(generators::text().max_size(50));
+        let path_suffix = raw_suffix.trim_start_matches('/');
+        let path = format!("/{path_suffix}");
+
+        for base in &["https://example.com", "https://example.com/"] {
+            let result = make_absolute_url(&path, base);
+            // After the scheme's "://", there should be no "//".
+            if let Some(rest) = result.strip_prefix("https://") {
+                assert!(
+                    !rest.contains("//"),
+                    "double slash in result: {result:?} (path={path:?}, base={base:?})"
+                );
+            }
+        }
     }
 }

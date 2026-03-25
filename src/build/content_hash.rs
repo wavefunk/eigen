@@ -835,6 +835,134 @@ mod tests {
         assert_eq!(content, "<h1>Hello</h1>");
     }
 
+    // --- Hegel property-based tests ---
+
+    use hegel::generators;
+
+    #[hegel::test]
+    fn prop_content_hash_determinism(tc: hegel::TestCase) {
+        let data: Vec<u8> = tc.draw(generators::binary());
+        assert_eq!(content_hash(&data), content_hash(&data));
+    }
+
+    #[hegel::test]
+    fn prop_content_hash_format_invariant(tc: hegel::TestCase) {
+        let data: Vec<u8> = tc.draw(generators::binary());
+        let hash = content_hash(&data);
+        assert_eq!(hash.len(), 16, "hash must be exactly 16 chars");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "hash must be all lowercase hex, got: {hash}"
+        );
+    }
+
+    #[hegel::test]
+    fn prop_content_hash_collision_resistance(tc: hegel::TestCase) {
+        let a: Vec<u8> = tc.draw(generators::binary());
+        let b: Vec<u8> = tc.draw(generators::binary());
+        tc.assume(a != b);
+        assert_ne!(content_hash(&a), content_hash(&b));
+    }
+
+    #[hegel::test]
+    fn prop_hashed_filename_preserves_extension(tc: hegel::TestCase) {
+        let filename: String = tc.draw(generators::from_regex(r"[a-z]{1,10}\.[a-z]{1,5}"));
+        let hash: String = tc.draw(generators::from_regex(r"[0-9a-f]{16}"));
+        let result = hashed_filename(&filename, &hash);
+        let original_ext = filename.rsplit('.').next().unwrap();
+        assert!(
+            result.ends_with(&format!(".{original_ext}")),
+            "expected extension '.{original_ext}' preserved, got: {result}"
+        );
+    }
+
+    #[hegel::test]
+    fn prop_hashed_filename_contains_hash(tc: hegel::TestCase) {
+        let filename: String = tc.draw(generators::from_regex(r"[a-z]{1,10}\.[a-z]{1,5}"));
+        let hash: String = tc.draw(generators::from_regex(r"[0-9a-f]{16}"));
+        let result = hashed_filename(&filename, &hash);
+        assert!(
+            result.contains(&hash),
+            "output '{result}' must contain hash '{hash}'"
+        );
+    }
+
+    #[hegel::test]
+    fn prop_rewrite_file_content_idempotence(tc: hegel::TestCase) {
+        let key: String = tc.draw(generators::from_regex(r"/[a-z]{1,8}\.[a-z]{1,4}"));
+        let value: String = tc.draw(generators::from_regex(r"/[a-z]{1,8}\.[0-9a-f]{8}\.[a-z]{1,4}"));
+        tc.assume(key != value);
+        tc.assume(!value.contains(&key));
+
+        let mut manifest = AssetManifest::new();
+        manifest.insert(key.clone(), value.clone());
+        let pairs = manifest.pairs_longest_first();
+
+        let content = format!("<link href=\"{key}\">");
+        let first = rewrite_file_content(&content, &pairs).unwrap();
+        // Second pass should find nothing to replace.
+        assert!(
+            rewrite_file_content(&first, &pairs).is_none(),
+            "second rewrite pass should be a no-op"
+        );
+    }
+
+    #[hegel::test]
+    fn prop_asset_manifest_model(tc: hegel::TestCase) {
+        let entries: std::collections::HashMap<String, String> = tc.draw(
+            generators::hashmaps(
+                generators::text().min_size(1).max_size(20),
+                generators::text().min_size(1).max_size(20),
+            )
+            .max_size(20),
+        );
+
+        let mut manifest = AssetManifest::new();
+        for (k, v) in &entries {
+            manifest.insert(k.clone(), v.clone());
+        }
+
+        // resolve returns the mapped value for inserted keys.
+        for (k, v) in &entries {
+            assert_eq!(manifest.resolve(k), v.as_str());
+        }
+
+        // resolve returns the original for non-inserted keys.
+        let missing = "___key_not_in_manifest___";
+        assert_eq!(manifest.resolve(missing), missing);
+
+        // len matches unique inserts.
+        assert_eq!(manifest.len(), entries.len());
+    }
+
+    #[hegel::test]
+    fn prop_pairs_longest_first_sorted(tc: hegel::TestCase) {
+        let entries: std::collections::HashMap<String, String> = tc.draw(
+            generators::hashmaps(
+                generators::text().min_size(1).max_size(30),
+                generators::text().min_size(1).max_size(30),
+            )
+            .max_size(20),
+        );
+
+        let mut manifest = AssetManifest::new();
+        for (k, v) in &entries {
+            manifest.insert(k.clone(), v.clone());
+        }
+
+        let pairs = manifest.pairs_longest_first();
+        for window in pairs.windows(2) {
+            assert!(
+                window[0].0.len() >= window[1].0.len(),
+                "pairs not sorted by decreasing key length: '{}' (len {}) before '{}' (len {})",
+                window[0].0,
+                window[0].0.len(),
+                window[1].0,
+                window[1].0.len(),
+            );
+        }
+    }
+
     // --- end-to-end ---
 
     #[test]

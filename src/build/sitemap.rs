@@ -27,6 +27,10 @@ pub fn generate_sitemap(
     xml.push_str("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
 
     for page in pages {
+        if page.sitemap_exclude {
+            continue;
+        }
+
         let priority = if page.is_index {
             "1.0"
         } else if page.is_dynamic {
@@ -122,11 +126,13 @@ mod tests {
                 url_path: "/index.html".into(),
                 is_index: true,
                 is_dynamic: false,
+                sitemap_exclude: false,
             },
             RenderedPage {
                 url_path: "/about.html".into(),
                 is_index: false,
                 is_dynamic: false,
+                sitemap_exclude: false,
             },
         ];
 
@@ -153,6 +159,7 @@ mod tests {
                 url_path: "/posts/hello.html".into(),
                 is_index: false,
                 is_dynamic: true,
+                sitemap_exclude: false,
             },
         ];
 
@@ -205,6 +212,7 @@ mod tests {
                 url_path: "/about.html".into(),
                 is_index: false,
                 is_dynamic: false,
+                sitemap_exclude: false,
             },
         ];
 
@@ -214,5 +222,34 @@ mod tests {
         // Should not have double slash.
         assert!(xml.contains("https://example.com/about.html"));
         assert!(!xml.contains("https://example.com//about.html"));
+    }
+
+    #[test]
+    fn test_sitemap_excludes_marked_pages() {
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let pages = vec![
+            RenderedPage {
+                url_path: "/index.html".into(),
+                is_index: true,
+                is_dynamic: false,
+                sitemap_exclude: false,
+            },
+            RenderedPage {
+                url_path: "/private.html".into(),
+                is_index: false,
+                is_dynamic: false,
+                sitemap_exclude: true,
+            },
+        ];
+
+        let config = test_config();
+        generate_sitemap(&dist, &pages, &config, "2024-01-01").unwrap();
+
+        let xml = fs::read_to_string(dist.join("sitemap.xml")).unwrap();
+        assert!(xml.contains("https://example.com/index.html"));
+        assert!(!xml.contains("https://example.com/private.html"));
     }
 }

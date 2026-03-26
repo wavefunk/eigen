@@ -19,6 +19,11 @@ pub struct Frontmatter {
     /// Which template blocks to extract as fragments (overrides the default
     /// `content_block` from build config).
     pub fragment_blocks: Option<Vec<String>>,
+    /// Exclude this page from `sitemap.xml`. Default: false.
+    pub sitemap_exclude: bool,
+    /// Inject `<meta name="robots" content="noindex,nofollow">` into this
+    /// page's `<head>`. Tells search engines not to index the page. Default: false.
+    pub noindex: bool,
 }
 
 impl Default for Frontmatter {
@@ -29,6 +34,8 @@ impl Default for Frontmatter {
             item_as: "item".into(),
             data: HashMap::new(),
             fragment_blocks: None,
+            sitemap_exclude: false,
+            noindex: false,
         }
     }
 }
@@ -66,6 +73,10 @@ struct RawFrontmatter {
     #[serde(default)]
     data: HashMap<String, DataQuery>,
     fragment_blocks: Option<Vec<String>>,
+    #[serde(default)]
+    sitemap_exclude: bool,
+    #[serde(default)]
+    noindex: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +150,8 @@ pub fn parse_frontmatter(raw_yaml: &str, file_path: &str) -> Result<Frontmatter>
         item_as: raw.item_as.unwrap_or_else(|| "item".into()),
         data: raw.data,
         fragment_blocks: raw.fragment_blocks,
+        sitemap_exclude: raw.sitemap_exclude,
+        noindex: raw.noindex,
     })
 }
 

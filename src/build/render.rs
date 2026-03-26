@@ -34,6 +34,8 @@ pub struct RenderedPage {
     pub is_index: bool,
     /// Whether this page was generated from a dynamic template.
     pub is_dynamic: bool,
+    /// Whether this page should be excluded from sitemap.xml.
+    pub sitemap_exclude: bool,
 }
 
 /// Run the full build process.
@@ -180,6 +182,26 @@ pub fn build(project_root: &Path) -> Result<()> {
 }
 
 /// Count static vs dynamic pages.
+/// Inject `<meta name="robots" content="noindex,nofollow">` into `<head>`.
+///
+/// Inserts immediately before `</head>`. Falls back to prepending at the
+/// start of the document if no `</head>` is found.
+fn inject_noindex(html: &str) -> String {
+    const META: &str = r#"<meta name="robots" content="noindex,nofollow">"#;
+    let lower = html.to_lowercase();
+    if let Some(pos) = lower.find("</head>") {
+        let mut result = String::with_capacity(html.len() + META.len() + 1);
+        result.push_str(&html[..pos]);
+        result.push('\n');
+        result.push_str(META);
+        result.push('\n');
+        result.push_str(&html[pos..]);
+        result
+    } else {
+        format!("{}\n{}", META, html)
+    }
+}
+
 fn count_page_types(pages: &[PageDef]) -> (usize, usize) {
     let mut static_count = 0;
     let mut dynamic_count = 0;
@@ -311,14 +333,21 @@ fn render_static_page(
         dist_dir,
     ).wrap_err_with(|| format!("Plugin post_render_html failed for '{}'", tmpl_name))?;
 
-    // 4c. Minify HTML (last transformation before writing).
+    // 4c. Inject noindex meta tag if requested by frontmatter.
+    let full_html = if page.frontmatter.noindex {
+        inject_noindex(&full_html)
+    } else {
+        full_html
+    };
+
+    // 4d. Minify HTML (last transformation before writing).
     let full_html = if config.build.minify {
         minify::minify_html(&full_html)
     } else {
         full_html
     };
 
-    // 4d. Inject analytics snippet if configured.
+    // 4e. Inject analytics snippet if configured.
     let full_html = if let Some(ref analytics) = config.analytics {
         analytics::inject_analytics(&full_html, &analytics.tracking_id)
     } else {
@@ -374,6 +403,7 @@ fn render_static_page(
         url_path,
         is_index,
         is_dynamic: false,
+        sitemap_exclude: page.frontmatter.sitemap_exclude,
     })
 }
 
@@ -557,6 +587,13 @@ fn render_dynamic_page(
             format!("Plugin post_render_html failed for '{}' slug '{}'", tmpl_name, slug)
         })?;
 
+        // Inject noindex meta tag if requested by frontmatter.
+        let full_html = if page.frontmatter.noindex {
+            inject_noindex(&full_html)
+        } else {
+            full_html
+        };
+
         // Minify HTML (last transformation before writing).
         let full_html = if config.build.minify {
             minify::minify_html(&full_html)
@@ -617,6 +654,7 @@ fn render_dynamic_page(
         rendered_pages.push(RenderedPage {
             url_path,
             is_index: false,
+            sitemap_exclude: page.frontmatter.sitemap_exclude,
             is_dynamic: true,
         });
     }
@@ -1597,5 +1635,142 @@ minify = false
 
         // robots disabled by default — file should not appear in dist even if in static/
         assert!(!root.join("dist/robots.txt").exists());
+    }
+
+    // --- noindex and sitemap_exclude tests ---
+
+    #[test]
+    fn test_noindex_injects_meta_tag() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+"#,
+        );
+        write(root, "templates/_base.html", "<html><head></head><body>{% block content %}{% endblock %}</body></html>");
+        write(
+            root,
+            "templates/secret.html",
+            "---\nnoindex: true\n---\n{% extends \"_base.html\" %}{% block content %}secret{% endblock %}",
+        );
+        write(
+            root,
+            "templates/index.html",
+            "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}",
+        );
+
+        build(root).unwrap();
+
+        let secret = fs::read_to_string(root.join("dist/secret.html")).unwrap();
+        assert!(secret.contains(r#"<meta name="robots" content="noindex,nofollow">"#));
+
+        // index.html has no noindex — must NOT have the meta tag
+        let index = fs::read_to_string(root.join("dist/index.html")).unwrap();
+        assert!(!index.contains(r#"<meta name="robots""#));
+    }
+
+    #[test]
+    fn test_noindex_false_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        setup_minimal_project(root);
+        build(root).unwrap();
+
+        let index = fs::read_to_string(root.join("dist/index.html")).unwrap();
+        assert!(!index.contains(r#"<meta name="robots""#));
+    }
+
+    #[test]
+    fn test_sitemap_exclude_removes_page_from_sitemap() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+"#,
+        );
+        write(root, "templates/_base.html", "<html><head></head><body>{% block content %}{% endblock %}</body></html>");
+        write(
+            root,
+            "templates/private.html",
+            "---\nsitemap_exclude: true\n---\n{% extends \"_base.html\" %}{% block content %}private{% endblock %}",
+        );
+        write(
+            root,
+            "templates/index.html",
+            "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}",
+        );
+
+        build(root).unwrap();
+
+        let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
+        assert!(sitemap.contains("https://test.com/index.html"));
+        assert!(!sitemap.contains("https://test.com/private.html"));
+    }
+
+    #[test]
+    fn test_sitemap_exclude_false_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        setup_minimal_project(root);
+        build(root).unwrap();
+
+        let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
+        assert!(sitemap.contains("index.html"));
+    }
+
+    #[test]
+    fn test_noindex_and_sitemap_exclude_together() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(
+            root,
+            "site.toml",
+            r#"
+[site]
+name = "Test"
+base_url = "https://test.com"
+
+[build]
+minify = false
+"#,
+        );
+        write(root, "templates/_base.html", "<html><head></head><body>{% block content %}{% endblock %}</body></html>");
+        write(
+            root,
+            "templates/hidden.html",
+            "---\nnoindex: true\nsitemap_exclude: true\n---\n{% extends \"_base.html\" %}{% block content %}hidden{% endblock %}",
+        );
+        write(
+            root,
+            "templates/index.html",
+            "{% extends \"_base.html\" %}{% block content %}hi{% endblock %}",
+        );
+
+        build(root).unwrap();
+
+        let hidden = fs::read_to_string(root.join("dist/hidden.html")).unwrap();
+        assert!(hidden.contains(r#"<meta name="robots" content="noindex,nofollow">"#));
+
+        let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
+        assert!(!sitemap.contains("hidden.html"));
     }
 }

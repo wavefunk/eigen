@@ -408,6 +408,7 @@ fn render_static_page_dev(
         url_path,
         is_index,
         is_dynamic: false,
+        sitemap_exclude: page.frontmatter.sitemap_exclude,
         template_path: Some(page.template_path.display().to_string()),
     })
 }
@@ -591,6 +592,7 @@ fn render_dynamic_page_dev(
             url_path,
             is_index: false,
             is_dynamic: true,
+            sitemap_exclude: page.frontmatter.sitemap_exclude,
             template_path: Some(page.template_path.display().to_string()),
         });
     }

@@ -43,4 +43,22 @@ pub enum Command {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
     },
+    /// Run SEO, performance, and accessibility audit on the site
+    Audit {
+        /// Path to the project root (default: current directory)
+        #[arg(short, long, default_value = ".")]
+        project: PathBuf,
+
+        /// Output format: "markdown" (default) or "json"
+        #[arg(short, long, default_value = "markdown")]
+        format: String,
+
+        /// Write report files to this path prefix
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Skip building and audit existing dist/ directory
+        #[arg(long)]
+        no_build: bool,
+    },
 }

@@ -32,6 +32,35 @@ pub fn inject_reload_script(html: &str) -> String {
     }
 }
 
+/// Inject a status banner (e.g. "DRAFT" or "SCHEDULED: 2026-04-01")
+/// into rendered HTML during dev mode.
+///
+/// The banner is a fixed-position div at the bottom of the viewport.
+/// If `label` is empty, returns the HTML unchanged.
+pub fn inject_status_banner(html: &str, label: &str) -> String {
+    if label.is_empty() {
+        return html.to_string();
+    }
+
+    let banner = format!(
+        r#"<div id="eigen-draft-banner" style="position:fixed;bottom:0;left:0;right:0;background:#b91c1c;color:#fff;text-align:center;padding:6px 12px;font:14px/1.4 system-ui;z-index:99999;">{}</div>"#,
+        label
+    );
+
+    let lower = html.to_lowercase();
+    if let Some(pos) = lower.rfind("</body>") {
+        let mut result = String::with_capacity(html.len() + banner.len() + 1);
+        result.push_str(&html[..pos]);
+        result.push('\n');
+        result.push_str(&banner);
+        result.push('\n');
+        result.push_str(&html[pos..]);
+        result
+    } else {
+        format!("{}\n{}", html, banner)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +98,38 @@ mod tests {
         let result = inject_reload_script(html);
         assert!(result.contains("<h1>Hello</h1>"));
         assert!(result.contains("</body></html>"));
+    }
+
+    #[test]
+    fn test_inject_status_banner_draft() {
+        let html = "<html><body><h1>Hi</h1></body></html>";
+        let result = inject_status_banner(html, "DRAFT");
+        assert!(result.contains("DRAFT"));
+        assert!(result.contains("eigen-draft-banner"));
+        let banner_pos = result.find("eigen-draft-banner").unwrap();
+        let body_close_pos = result.find("</body>").unwrap();
+        assert!(banner_pos < body_close_pos);
+    }
+
+    #[test]
+    fn test_inject_status_banner_scheduled() {
+        let html = "<html><body><h1>Hi</h1></body></html>";
+        let result = inject_status_banner(html, "SCHEDULED: 2026-04-01");
+        assert!(result.contains("SCHEDULED: 2026-04-01"));
+        assert!(result.contains("eigen-draft-banner"));
+    }
+
+    #[test]
+    fn test_inject_status_banner_empty_label() {
+        let html = "<html><body><h1>Hi</h1></body></html>";
+        let result = inject_status_banner(html, "");
+        assert_eq!(result, html, "Empty label should not inject a banner");
+    }
+
+    #[test]
+    fn test_inject_status_banner_no_body() {
+        let html = "<h1>Fragment</h1>";
+        let result = inject_status_banner(html, "DRAFT");
+        assert!(result.contains("DRAFT"));
     }
 }

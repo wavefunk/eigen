@@ -1,13 +1,13 @@
 //! Step 3.2: DataFetcher — fetch data from local files or remote sources with
 //! caching, root extraction, and transforms.
 
-use eyre::{Result, WrapErr, bail};
+use eyre::{bail, Result, WrapErr};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::SourceConfig;
-use crate::frontmatter::DataQuery;
+use crate::frontmatter::{DataQuery, HttpMethod};
 use crate::plugins::registry::PluginRegistry;
 
 use super::transforms::apply_transforms;
@@ -52,10 +52,23 @@ impl DataFetcher {
         let source_name = query.source.as_deref();
         let query_path = query.path.as_deref();
 
+        // Warn if body is set on a GET request — it will be ignored.
+        if matches!(query.method, HttpMethod::Get) && query.body.is_some() {
+            tracing::warn!(
+                "Data query has 'body' set but method is GET — body will be ignored. \
+                 Did you mean to set method: post?"
+            );
+        }
+
         let raw = if let Some(ref file) = query.file {
             self.fetch_file(file)?
         } else if let Some(ref source_name) = query.source {
-            self.fetch_source(source_name, query.path.as_deref().unwrap_or(""))?
+            self.fetch_source(
+                source_name,
+                query.path.as_deref().unwrap_or(""),
+                &query.method,
+                query.body.as_ref(),
+            )?
         } else {
             bail!(
                 "DataQuery has neither `file` nor `source` set. \
@@ -93,10 +106,7 @@ impl DataFetcher {
         let content = std::fs::read_to_string(&full_path)
             .wrap_err_with(|| format!("Failed to read data file: {}", full_path.display()))?;
 
-        let ext = full_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let value: Value = match ext {
             "yaml" | "yml" => serde_yaml::from_str(&content)
@@ -115,53 +125,92 @@ impl DataFetcher {
     }
 
     /// Fetch data from a remote source defined in `site.toml`.
-    fn fetch_source(&mut self, source_name: &str, path: &str) -> Result<Value> {
+    fn fetch_source(
+        &mut self,
+        source_name: &str,
+        path: &str,
+        method: &HttpMethod,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Value> {
         let source = self
             .sources
             .get(source_name)
-            .ok_or_else(|| eyre::eyre!(
-                "Source '{}' not found in site.toml. Available: {}",
-                source_name,
-                self.sources.keys().cloned().collect::<Vec<_>>().join(", ")
-            ))?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Source '{}' not found in site.toml. Available: {}",
+                    source_name,
+                    self.sources.keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })?
             .clone();
 
         // Build full URL: base URL + path.
         let full_url = format!(
             "{}{}",
             source.url.trim_end_matches('/'),
-            if path.starts_with('/') { path.to_string() } else { format!("/{}", path) }
+            if path.starts_with('/') {
+                path.to_string()
+            } else {
+                format!("/{}", path)
+            }
         );
 
-        // Check URL cache.
-        if let Some(cached) = self.url_cache.get(&full_url) {
+        // Build cache key: include method (and body hash for POST).
+        let cache_key = match method {
+            HttpMethod::Get => format!("GET:{}", full_url),
+            HttpMethod::Post => {
+                let body_hash = match body {
+                    Some(b) => {
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let body_str = serde_json::to_string(b).unwrap_or_default();
+                        let mut hasher = DefaultHasher::new();
+                        body_str.hash(&mut hasher);
+                        hasher.finish().to_string()
+                    }
+                    None => String::new(),
+                };
+                format!("POST:{}:{}", full_url, body_hash)
+            }
+        };
+
+        if let Some(cached) = self.url_cache.get(&cache_key) {
             return Ok(cached.clone());
         }
 
-        // Perform HTTP GET.
-        let mut request = self.client.get(&full_url);
+        let mut headers = reqwest::header::HeaderMap::new();
         for (key, val) in &source.headers {
-            request = request.header(key.as_str(), val.as_str());
+            let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                .wrap_err_with(|| format!("Invalid header name: {}", key))?;
+            let value = reqwest::header::HeaderValue::from_str(val)
+                .wrap_err_with(|| format!("Invalid header value for {}", key))?;
+            headers.insert(name, value);
         }
 
-        let response = request.send().wrap_err_with(|| {
-            format!("HTTP request failed for {}", full_url)
-        })?;
+        let response = match method {
+            HttpMethod::Get => {
+                self.client.get(&full_url).headers(headers).send()
+            }
+            HttpMethod::Post => {
+                let mut req = self.client.post(&full_url).headers(headers);
+                if let Some(b) = body {
+                    req = req.json(b);
+                }
+                req.send()
+            }
+        }
+        .wrap_err_with(|| format!("HTTP request failed for {}", full_url))?;
 
         let status = response.status();
         if !status.is_success() {
-            bail!(
-                "HTTP {} from {}",
-                status,
-                full_url,
-            );
+            bail!("HTTP {} from {}", status, full_url);
         }
 
-        let value: Value = response.json().wrap_err_with(|| {
-            format!("Failed to parse JSON response from {}", full_url)
-        })?;
+        let value: Value = response
+            .json()
+            .wrap_err_with(|| format!("Failed to parse JSON response from {}", full_url))?;
 
-        self.url_cache.insert(full_url, value.clone());
+        self.url_cache.insert(cache_key, value.clone());
         Ok(value)
     }
 
@@ -465,14 +514,16 @@ mod tests {
 
     #[test]
     fn test_fetch_with_plugin_registry_transforms_data() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         #[derive(Debug)]
         struct AddFieldPlugin;
 
         impl Plugin for AddFieldPlugin {
-            fn name(&self) -> &str { "add_field" }
+            fn name(&self) -> &str {
+                "add_field"
+            }
 
             fn transform_data(
                 &self,
@@ -531,14 +582,16 @@ mod tests {
 
     #[test]
     fn test_fetch_plugin_runs_after_root_extraction() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         #[derive(Debug)]
         struct CountPlugin;
 
         impl Plugin for CountPlugin {
-            fn name(&self) -> &str { "count" }
+            fn name(&self) -> &str {
+                "count"
+            }
 
             fn transform_data(
                 &self,
@@ -579,15 +632,17 @@ mod tests {
 
     #[test]
     fn test_fetch_plugin_runs_before_filter_sort_limit() {
-        use crate::plugins::Plugin;
         use crate::plugins::registry::PluginRegistry;
+        use crate::plugins::Plugin;
 
         /// Plugin that adds a "status" field to all items.
         #[derive(Debug)]
         struct StatusPlugin;
 
         impl Plugin for StatusPlugin {
-            fn name(&self) -> &str { "status" }
+            fn name(&self) -> &str {
+                "status"
+            }
 
             fn transform_data(
                 &self,
@@ -636,5 +691,36 @@ mod tests {
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["status"], "published");
+    }
+
+    // --- Cache key differentiation tests ---
+
+    #[test]
+    fn test_cache_key_includes_method_and_body() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let url = "https://api.example.com/query";
+
+        let get_key = format!("GET:{}", url);
+
+        let body = serde_json::json!({"page_size": 100});
+        let body_str = serde_json::to_string(&body).unwrap();
+        let mut hasher = DefaultHasher::new();
+        body_str.hash(&mut hasher);
+        let post_key = format!("POST:{}:{}", url, hasher.finish());
+
+        let post_no_body_key = format!("POST:{}:", url);
+
+        let body2 = serde_json::json!({"page_size": 50});
+        let body2_str = serde_json::to_string(&body2).unwrap();
+        let mut hasher2 = DefaultHasher::new();
+        body2_str.hash(&mut hasher2);
+        let post_key2 = format!("POST:{}:{}", url, hasher2.finish());
+
+        assert_ne!(get_key, post_key);
+        assert_ne!(get_key, post_no_body_key);
+        assert_ne!(post_key, post_no_body_key);
+        assert_ne!(post_key, post_key2);
     }
 }

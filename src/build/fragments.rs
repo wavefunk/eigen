@@ -9,6 +9,15 @@
 use eyre::{Result, WrapErr};
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+/// Regex matching fragment START markers: `<!--FRAG:name:START-->`.
+static FRAG_START_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<!--FRAG:(\w+):START-->").unwrap());
+
+/// Regex matching all fragment markers (both START and END).
+static FRAG_MARKER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<!--FRAG:\w+:(?:START|END)-->").unwrap());
 
 /// A single extracted fragment.
 #[derive(Debug)]
@@ -27,10 +36,9 @@ pub fn extract_fragments(html: &str) -> Vec<Fragment> {
     // Rust's regex crate doesn't support backreferences, so we use a simple
     // state-machine approach: find each START marker, then search for the
     // matching END marker with the same name.
-    let start_re = Regex::new(r"<!--FRAG:(\w+):START-->").unwrap();
     let mut fragments = Vec::new();
 
-    for cap in start_re.captures_iter(html) {
+    for cap in FRAG_START_RE.captures_iter(html) {
         let block_name = cap[1].to_string();
         let start_match = cap.get(0).unwrap();
         let content_start = start_match.end();
@@ -54,8 +62,18 @@ pub fn extract_fragments(html: &str) -> Vec<Fragment> {
 ///
 /// The markers should not appear in the final output served to users.
 pub fn strip_fragment_markers(html: &str) -> String {
-    let re = Regex::new(r"<!--FRAG:\w+:(?:START|END)-->").unwrap();
-    re.replace_all(html, "").to_string()
+    FRAG_MARKER_RE.replace_all(html, "").to_string()
+}
+
+/// Extract fragment block names from rendered HTML (before marker stripping).
+///
+/// Returns the block names found in `<!--FRAG:name:START-->` markers.
+/// Used by view transitions to know which element IDs to add
+/// `view-transition-name` to.
+pub fn extract_block_names(html: &str) -> Vec<String> {
+    FRAG_START_RE.captures_iter(html)
+        .map(|cap| cap[1].to_string())
+        .collect()
 }
 
 /// Compute the output path for a fragment file.
@@ -363,5 +381,19 @@ mod tests {
 
         // OOB block should NOT be written as a separate fragment file.
         assert!(!dist.join("_fragments/about/nav_header.html").exists());
+    }
+
+    #[test]
+    fn test_extract_block_names() {
+        let html = "<!--FRAG:content:START--><h1>Hi</h1><!--FRAG:content:END--><!--FRAG:nav:START-->Nav<!--FRAG:nav:END-->";
+        let names = extract_block_names(html);
+        assert_eq!(names, vec!["content", "nav"]);
+    }
+
+    #[test]
+    fn test_extract_block_names_empty() {
+        let html = "<html><body>No markers</body></html>";
+        let names = extract_block_names(html);
+        assert!(names.is_empty());
     }
 }

@@ -84,7 +84,7 @@ pub fn build_page_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BuildConfig, SiteMeta};
+    use crate::config::{BuildConfig, SiteSchemaConfig, SiteMeta, SiteSeoConfig};
     use std::collections::HashMap;
 
     fn test_config() -> SiteConfig {
@@ -92,6 +92,9 @@ mod tests {
             site: SiteMeta {
                 name: "Test".into(),
                 base_url: "https://test.com".into(),
+                seo: SiteSeoConfig::default(),
+                schema: SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: BuildConfig::default(),
             sitemap: Default::default(),
@@ -100,6 +103,9 @@ mod tests {
             sources: HashMap::new(),
             analytics: None,
             plugins: HashMap::new(),
+            feed: HashMap::new(),
+            robots: None,
+            audit: None,
         }
     }
 

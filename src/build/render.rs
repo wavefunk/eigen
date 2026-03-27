@@ -18,14 +18,23 @@ use crate::template;
 use crate::template::errors::TemplateError;
 
 use super::analytics;
+use super::bundling;
+use super::content_hash;
 use super::context::{self, PageMeta};
+use super::critical_css;
+use super::feed;
 use super::fragments;
+use super::hints;
+use super::json_ld;
 use super::minify;
+use super::not_found;
 use super::output;
 use super::robots;
+use super::seo;
 use super::sitemap;
+use super::view_transitions;
 
-/// A record of a rendered page, used for sitemap generation.
+/// A record of a rendered page, used for sitemap generation and auditing.
 #[derive(Debug, Clone)]
 pub struct RenderedPage {
     /// URL path relative to site root, e.g. `/about.html`.
@@ -36,12 +45,14 @@ pub struct RenderedPage {
     pub is_dynamic: bool,
     /// Whether this page should be excluded from sitemap.xml.
     pub sitemap_exclude: bool,
+    /// Source template path (for audit diagnostics). `None` in tests.
+    pub template_path: Option<String>,
 }
 
 /// Run the full build process.
 ///
 /// This is the main entry point for `eigen build`.
-pub fn build(project_root: &Path) -> Result<()> {
+pub fn build(project_root: &Path, dev: bool) -> Result<()> {
     let config = crate::config::load_config(project_root)?;
     tracing::info!("Loading config... ✓ ({})", config.site.name);
 
@@ -65,17 +76,56 @@ pub fn build(project_root: &Path) -> Result<()> {
         dynamic_count,
     );
 
+    // Filter out draft and future-scheduled static pages in production builds.
+    let total_discovered = pages.len();
+    let pages: Vec<PageDef> = if dev {
+        pages
+    } else {
+        let today = chrono::Utc::now().date_naive();
+        pages
+            .into_iter()
+            .filter(|p| {
+                matches!(p.page_type, PageType::Dynamic { .. })
+                    || is_published(&p.frontmatter, today)
+            })
+            .collect()
+    };
+    let skipped = total_discovered - pages.len();
+    if skipped > 0 {
+        tracing::info!("Skipped {} draft/scheduled page(s).", skipped);
+    }
+
     // Set up output directory.
     output::setup_output_dir(
         project_root,
         config.build.fragments,
         &config.build.fragment_dir,
     )?;
-    output::copy_static_assets(project_root)?;
+    // Phase 1: Copy static assets (with content hashing if enabled).
+    let manifest = output::copy_static_assets(project_root, &config.build.content_hash)?;
+    let manifest = std::sync::Arc::new(manifest);
+
+    if !manifest.is_empty() {
+        tracing::info!(
+            "Content hashing: {} assets fingerprinted.",
+            manifest.len(),
+        );
+    }
     tracing::info!("Copying static assets... ✓");
 
     // Set up template engine (with plugin extensions).
-    let env = template::setup_environment(project_root, &config, &pages, Some(&plugin_registry))?;
+    // Phase 2: Setup template engine (pass manifest for asset() function).
+    let env = template::setup_environment(
+        project_root,
+        &config,
+        &pages,
+        Some(&plugin_registry),
+        if config.build.content_hash.enabled {
+            Some(manifest.clone())
+        } else {
+            None
+        },
+    )?;
     tracing::debug!("Template engine configured.");
 
     // Data fetcher.
@@ -105,6 +155,20 @@ pub fn build(project_root: &Path) -> Result<()> {
         tracing::info!("HTML minification enabled (CSS + JS).");
     }
 
+    // Critical CSS cache.
+    let mut css_cache = critical_css::StylesheetCache::new();
+    if config.build.critical_css.enabled {
+        tracing::info!("Critical CSS inlining enabled.");
+    }
+
+    if config.build.hints.enabled {
+        tracing::info!("Resource hints enabled (preload + prefetch).");
+    }
+
+    if config.build.bundling.enabled {
+        tracing::info!("CSS/JS bundling enabled.");
+    }
+
     // Build timestamp.
     let build_time = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
@@ -130,6 +194,8 @@ pub fn build(project_root: &Path) -> Result<()> {
                     &asset_client,
                     &plugin_registry,
                     &image_cache,
+                    &mut css_cache,
+                    &manifest,
                 )?;
                 rendered_pages.push(result);
             }
@@ -148,10 +214,17 @@ pub fn build(project_root: &Path) -> Result<()> {
                     &asset_client,
                     &plugin_registry,
                     &image_cache,
+                    &mut css_cache,
+                    &manifest,
                 )?;
                 rendered_pages.extend(results);
             }
         }
+    }
+
+    // Generate 404 page (default or custom template, controlled by not_found flag).
+    if config.build.not_found {
+        not_found::write_default_if_missing(project_root, &dist_dir)?;
     }
 
     // Generate sitemap.
@@ -165,8 +238,63 @@ pub fn build(project_root: &Path) -> Result<()> {
         robots::write(project_root, &dist_dir, &config)?;
     }
 
+    // Generate robots.txt.
+    if config.robots.is_some() {
+        robots::generate_robots_txt(&dist_dir, &config)?;
+        tracing::info!("Generating robots.txt... done");
+    }
+
+    // Generate Atom feeds.
+    if !config.feed.is_empty() {
+        let feed_count = feed::generate_feeds(
+            &dist_dir,
+            &config,
+            &mut fetcher,
+            Some(&plugin_registry),
+            &build_time,
+        )?;
+        tracing::info!("Generating {} feed(s)... done", feed_count);
+    }
+
     // Run post-build hooks
     plugin_registry.post_build(&dist_dir, project_root)?;
+
+    // Phase 2.5: CSS/JS bundling and tree-shaking.
+    let bundled_files = if config.build.bundling.enabled {
+        let files = bundling::bundle_assets(
+            &dist_dir, &config.build.bundling, config.build.minify,
+        ).wrap_err("CSS/JS bundling failed")?;
+        if !files.is_empty() {
+            tracing::info!(
+                "Bundling: {} file(s) generated.",
+                files.len(),
+            );
+        }
+        files
+    } else {
+        Vec::new()
+    };
+
+    // Phase 3: Content hash rewrite.
+    if config.build.content_hash.enabled {
+        // Hash bundled files (generated, not from static/).
+        let bundle_manifest = if !bundled_files.is_empty() {
+            Some(content_hash::hash_additional_files(
+                &dist_dir, &bundled_files,
+            ).wrap_err("Failed to hash bundled files")?)
+        } else {
+            None
+        };
+
+        if !manifest.is_empty() || bundle_manifest.is_some() {
+            content_hash::rewrite_references(
+                &dist_dir,
+                &manifest,
+                bundle_manifest.as_ref(),
+            )?;
+            tracing::info!("Asset references rewritten.");
+        }
+    }
 
     tracing::info!(
         "Rendering pages... ✓ ({} pages, {} data queries)",
@@ -179,6 +307,20 @@ pub fn build(project_root: &Path) -> Result<()> {
         rendered_pages.len(),
     );
     Ok(())
+}
+
+/// Check whether a page should be included in production builds.
+///
+/// A page is unpublished if `draft == true` or if `publish_date` is
+/// set and is after `today`.
+fn is_published(fm: &crate::frontmatter::Frontmatter, today: chrono::NaiveDate) -> bool {
+    if fm.draft {
+        return false;
+    }
+    match fm.publish_date {
+        Some(date) if date > today => false,
+        _ => true,
+    }
 }
 
 /// Count static vs dynamic pages.
@@ -253,6 +395,8 @@ fn render_static_page(
     asset_client: &reqwest::blocking::Client,
     plugin_registry: &PluginRegistry,
     image_cache: &ImageCache,
+    css_cache: &mut critical_css::StylesheetCache,
+    manifest: &std::sync::Arc<content_hash::AssetManifest>,
 ) -> Result<RenderedPage> {
     let tmpl_name = page.template_path.to_string_lossy().to_string();
 
@@ -287,6 +431,21 @@ fn render_static_page(
 
     let ctx = context::build_page_context(config, global_data, &page_data, meta, None);
 
+    // Resolve SEO template expressions (static pages rarely use these,
+    // but support them for consistency).
+    let resolved_seo = seo::resolve_seo_expressions(
+        &page.frontmatter.seo,
+        env,
+        &ctx,
+    );
+
+    // Resolve schema template expressions.
+    let resolved_schema = json_ld::resolve_schema_expressions(
+        &page.frontmatter.schema,
+        env,
+        &ctx,
+    );
+
     // 3. Render template.
     let tmpl = env.get_template(&tmpl_name)
         .wrap_err_with(|| format!("Template '{}' not found in environment", tmpl_name))?;
@@ -301,6 +460,13 @@ fn render_static_page(
                 tmpl_name, te.short_msg
             ));
         }
+    };
+
+    // Extract fragment block names (before marker stripping) for view transitions.
+    let block_names = if config.build.view_transitions.enabled {
+        fragments::extract_block_names(&rendered)
+    } else {
+        Vec::new()
     };
 
     // 4. Write full page (with markers stripped, assets localized, images optimized, plugins applied).
@@ -319,6 +485,7 @@ fn render_static_page(
         &config.assets.images,
         image_cache,
         dist_dir,
+        page.frontmatter.hero_image.as_deref(),
     ).wrap_err_with(|| format!("Failed to optimize images for '{}'", tmpl_name))?;
     let full_html = assets::rewrite_css_background_images(
         &full_html,
@@ -333,21 +500,72 @@ fn render_static_page(
         dist_dir,
     ).wrap_err_with(|| format!("Plugin post_render_html failed for '{}'", tmpl_name))?;
 
-    // 4c. Inject noindex meta tag if requested by frontmatter.
+    
+    // 4c. Critical CSS inlining (after plugins, before minify).
+    let full_html = if config.build.critical_css.enabled {
+        critical_css::inline_critical_css(
+            &full_html,
+            &config.build.critical_css,
+            dist_dir,
+            css_cache,
+            if manifest.is_empty() { None } else { Some(manifest.as_ref()) },
+        )
+    } else {
+        full_html
+    };
+  // 4d. Inject noindex meta tag if requested by frontmatter.
     let full_html = if page.frontmatter.noindex {
         inject_noindex(&full_html)
+  } else {
+        full_html
+    };
+    // 4e. Preload/prefetch hints (after critical CSS, before minify).
+    let full_html = if config.build.hints.enabled {
+        hints::inject_resource_hints(
+            &full_html,
+            &config.build.hints,
+            dist_dir,
+            page.frontmatter.hero_image.as_deref(),
+            &url_path,
+            &config.build.fragment_dir,
+            config.build.fragments,
+        )
     } else {
         full_html
     };
 
-    // 4d. Minify HTML (last transformation before writing).
+    // 4f. SEO meta tag injection (after hints, before minify).
+    let full_html = seo::inject_seo_tags(
+        &full_html,
+        &resolved_seo,
+        &config.site,
+        &url_path,
+    );
+
+    // 4g. JSON-LD structured data injection (after SEO, before minify).
+    let full_html = json_ld::inject_json_ld(
+        &full_html,
+        &resolved_schema,
+        &resolved_seo,
+        &config.site,
+        &url_path,
+    );
+
+    // 4h. View transitions injection (after JSON-LD, before minify).
+    let full_html = if config.build.view_transitions.enabled {
+        view_transitions::inject_view_transitions(&full_html, &block_names)
+    } else {
+        full_html
+    };
+
+    // 4i. Minify HTML (last transformation before writing).
     let full_html = if config.build.minify {
         minify::minify_html(&full_html)
     } else {
         full_html
     };
 
-    // 4e. Inject analytics snippet if configured.
+    // 4j. Inject analytics snippet if configured.
     let full_html = if let Some(ref analytics) = config.analytics {
         analytics::inject_analytics(&full_html, &analytics.tracking_id)
     } else {
@@ -404,6 +622,7 @@ fn render_static_page(
         is_index,
         is_dynamic: false,
         sitemap_exclude: page.frontmatter.sitemap_exclude,
+        template_path: Some(page.template_path.display().to_string()),
     })
 }
 
@@ -426,6 +645,8 @@ fn render_dynamic_page(
     asset_client: &reqwest::blocking::Client,
     plugin_registry: &PluginRegistry,
     image_cache: &ImageCache,
+    css_cache: &mut critical_css::StylesheetCache,
+    manifest: &std::sync::Arc<content_hash::AssetManifest>,
 ) -> Result<Vec<RenderedPage>> {
     let tmpl_name = page.template_path.to_string_lossy().to_string();
     let item_as = &page.frontmatter.item_as;
@@ -536,6 +757,20 @@ fn render_dynamic_page(
             Some((item_as, item)),
         );
 
+        // Resolve SEO template expressions for this item.
+        let resolved_seo = seo::resolve_seo_expressions(
+            &page.frontmatter.seo,
+            env,
+            &ctx,
+        );
+
+        // Resolve schema template expressions for this item.
+        let resolved_schema = json_ld::resolve_schema_expressions(
+            &page.frontmatter.schema,
+            env,
+            &ctx,
+        );
+
         // Render.
         let rendered = match tmpl.render(&ctx) {
             Ok(html) => html,
@@ -547,6 +782,13 @@ fn render_dynamic_page(
                     tmpl_name, slug, te.short_msg
                 ));
             }
+        };
+
+        // Extract fragment block names (before marker stripping) for view transitions.
+        let block_names = if config.build.view_transitions.enabled {
+            fragments::extract_block_names(&rendered)
+        } else {
+            Vec::new()
         };
 
         // Write full page (with assets localized, images optimized, plugins applied).
@@ -567,6 +809,7 @@ fn render_dynamic_page(
             &config.assets.images,
             image_cache,
             dist_dir,
+            page.frontmatter.hero_image.as_deref(),
         ).wrap_err_with(|| {
             format!("Failed to optimize images for '{}' slug '{}'", tmpl_name, slug)
         })?;
@@ -587,9 +830,61 @@ fn render_dynamic_page(
             format!("Plugin post_render_html failed for '{}' slug '{}'", tmpl_name, slug)
         })?;
 
-        // Inject noindex meta tag if requested by frontmatter.
+       
+        // Critical CSS inlining (after plugins, before minify).
+        let full_html = if config.build.critical_css.enabled {
+            critical_css::inline_critical_css(
+                &full_html,
+                &config.build.critical_css,
+                dist_dir,
+                css_cache,
+                if manifest.is_empty() { None } else { Some(manifest.as_ref()) },
+            )
+        } else {
+            full_html
+        };
+       // Inject noindex meta tag if requested by frontmatter.
         let full_html = if page.frontmatter.noindex {
             inject_noindex(&full_html)
+          } else {
+            full_html
+        };
+
+        // Preload/prefetch hints (after critical CSS, before minify).
+        let full_html = if config.build.hints.enabled {
+            hints::inject_resource_hints(
+                &full_html,
+                &config.build.hints,
+                dist_dir,
+                page.frontmatter.hero_image.as_deref(),
+                &url_path,
+                &config.build.fragment_dir,
+                config.build.fragments,
+            )
+        } else {
+            full_html
+        };
+
+        // SEO meta tag injection (after hints, before minify).
+        let full_html = seo::inject_seo_tags(
+            &full_html,
+            &resolved_seo,
+            &config.site,
+            &url_path,
+        );
+
+        // JSON-LD structured data injection (after SEO, before minify).
+        let full_html = json_ld::inject_json_ld(
+            &full_html,
+            &resolved_schema,
+            &resolved_seo,
+            &config.site,
+            &url_path,
+        );
+
+        // View transitions injection (after JSON-LD, before minify).
+        let full_html = if config.build.view_transitions.enabled {
+            view_transitions::inject_view_transitions(&full_html, &block_names)
         } else {
             full_html
         };
@@ -656,6 +951,7 @@ fn render_dynamic_page(
             is_index: false,
             sitemap_exclude: page.frontmatter.sitemap_exclude,
             is_dynamic: true,
+            template_path: Some(page.template_path.display().to_string()),
         });
     }
 
@@ -724,6 +1020,7 @@ fn optimize_fragment_images(
             image_config,
             image_cache,
             dist_dir,
+            None, // No hero image for fragments.
         )?;
         let optimized_html = assets::rewrite_css_background_images(
             &optimized_html,
@@ -817,7 +1114,7 @@ minify = false
 
         setup_minimal_project(root);
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         // Check dist/ exists and has the output.
         assert!(root.join("dist/index.html").exists());
@@ -885,7 +1182,7 @@ data:
             "- label: Home\n  url: /\n- label: About\n  url: /about\n",
         );
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
         assert!(html.contains(r#"<a href="/">Home</a>"#));
@@ -938,7 +1235,7 @@ item_as: post
             ]"#,
         );
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         // Check generated pages.
         assert!(root.join("dist/posts/hello-world.html").exists());
@@ -993,7 +1290,7 @@ collection:
 
         write(root, "_data/items.json", "[]");
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         // No pages should be generated for empty collection.
         let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
@@ -1009,7 +1306,7 @@ collection:
         write(root, "static/css/style.css", "body { color: red; }");
         write(root, "static/favicon.ico", "icon");
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         assert!(root.join("dist/css/style.css").exists());
         assert!(root.join("dist/favicon.ico").exists());
@@ -1049,7 +1346,7 @@ fragments = false
 {% block content %}<h1>Home</h1>{% endblock %}"#,
         );
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         assert!(root.join("dist/index.html").exists());
         assert!(!root.join("dist/_fragments").exists());
@@ -1069,7 +1366,7 @@ fragments = false
         // Create stale file in dist/.
         write(root, "dist/stale.html", "old content");
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         // Stale file should be gone.
         assert!(!root.join("dist/stale.html").exists());
@@ -1112,7 +1409,7 @@ fragments = false
             r#"{% extends "_base.html" %}{% block content %}Guide{% endblock %}"#,
         );
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         assert!(root.join("dist/index.html").exists());
         assert!(root.join("dist/about.html").exists());
@@ -1162,7 +1459,7 @@ slug_field: id
             r#"[{"id": 1, "title": "First"}, {"id": 2, "title": "Second"}]"#,
         );
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         assert!(root.join("dist/1.html").exists());
         assert!(root.join("dist/2.html").exists());
@@ -1195,7 +1492,7 @@ fragments = false
 {% block content %}URL:{{ page.current_url }} PATH:{{ page.current_path }}{% endblock %}"#,
         );
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         let html = fs::read_to_string(root.join("dist/about.html")).unwrap();
         assert!(html.contains("URL:/about.html"));
@@ -1243,7 +1540,7 @@ slug_field: slug
             ]"#,
         );
 
-        let result = build(root);
+        let result = build(root, true);
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(err.contains("Duplicate slug"));
@@ -1288,7 +1585,7 @@ slug_field: slug
             r#"[{"slug": "Hello World / Special!", "title": "Test"}]"#,
         );
 
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         // The slug should be sanitized to something safe.
         assert!(root.join("dist/hello-world-special.html").exists());
@@ -1320,7 +1617,7 @@ fragments = false
 {% block content %}<h1>Home</h1>{% endblock %}"#,
         );
 
-        let result = build(root);
+        let result = build(root, true);
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         // Should mention the template and the missing layout.
@@ -1347,7 +1644,7 @@ fragments = false
 
         write(root, "templates/index.html", "<h1>{{ undefined_var }}</h1>");
 
-        let result = build(root);
+        let result = build(root, true);
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(err.contains("undefined") || err.contains("unknown variable"));
@@ -1375,7 +1672,7 @@ fragments = false
         std::fs::create_dir_all(root.join("templates")).unwrap();
 
         // Should succeed, producing empty dist with just static assets.
-        build(root).unwrap();
+        build(root, true).unwrap();
 
         assert!(root.join("dist").is_dir());
         let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
@@ -1387,7 +1684,7 @@ fragments = false
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
-        let result = build(root);
+        let result = build(root, true);
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(err.contains("site.toml"));
@@ -1407,6 +1704,8 @@ fragments = false
 
     #[test]
     fn test_sitemap_disabled() {
+    #[test]
+    fn test_build_with_critical_css() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
@@ -1478,6 +1777,60 @@ clean_urls = true
 
     #[test]
     fn test_robots_generates_default() {
+name = "Critical CSS Test"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+
+[build.critical_css]
+enabled = true
+"#,
+        );
+
+        write(
+            root,
+            "templates/index.html",
+            r#"<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="hero">Hello World</div>
+</body>
+</html>"#,
+        );
+
+        write(
+            root,
+            "static/css/style.css",
+            r#"
+.hero { color: red; font-size: 2em; }
+.sidebar { color: blue; }
+.footer { color: gray; }
+"#,
+        );
+
+        build(root, true).unwrap();
+
+        let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
+
+        // Should have inlined <style> with .hero but not .sidebar or .footer.
+        assert!(html.contains("<style>"));
+        assert!(html.contains(".hero"));
+        assert!(!html.contains(".sidebar"));
+        assert!(!html.contains(".footer"));
+
+        // Should have a preload <link> for the full stylesheet.
+        assert!(html.contains(r#"rel="preload""#));
+        assert!(html.contains(r#"as="style""#));
+        assert!(html.contains("<noscript>"));
+    }
+
+    #[test]
+    fn test_build_critical_css_disabled_by_default() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
@@ -1635,6 +1988,99 @@ minify = false
 
         // robots disabled by default — file should not appear in dist even if in static/
         assert!(!root.join("dist/robots.txt").exists());
+name = "No Critical CSS"
+base_url = "https://test.com"
+
+[build]
+fragments = false
+minify = false
+"#,
+        );
+
+        write(
+            root,
+            "templates/index.html",
+            r#"<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="hero">Hello</div>
+</body>
+</html>"#,
+        );
+
+        write(root, "static/css/style.css", ".hero { color: red; }");
+
+        build(root, true).unwrap();
+
+        let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
+
+        // No inlined <style> -- critical CSS is disabled by default.
+        assert!(!html.contains("<style>"));
+        // Original <link> should be intact.
+        assert!(html.contains(r#"rel="stylesheet""#));
+    }
+
+    // --- is_published tests ---
+
+    #[test]
+    fn test_is_published_default() {
+        let fm = crate::frontmatter::Frontmatter::default();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        assert!(is_published(&fm, today));
+    }
+
+    #[test]
+    fn test_is_published_draft() {
+        let fm = crate::frontmatter::Frontmatter {
+            draft: true,
+            ..Default::default()
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        assert!(!is_published(&fm, today));
+    }
+
+    #[test]
+    fn test_is_published_future_date() {
+        let fm = crate::frontmatter::Frontmatter {
+            publish_date: Some(chrono::NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()),
+            ..Default::default()
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        assert!(!is_published(&fm, today));
+    }
+
+    #[test]
+    fn test_is_published_past_date() {
+        let fm = crate::frontmatter::Frontmatter {
+            publish_date: Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
+            ..Default::default()
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        assert!(is_published(&fm, today));
+    }
+
+    #[test]
+    fn test_is_published_today() {
+        let fm = crate::frontmatter::Frontmatter {
+            publish_date: Some(chrono::NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+            ..Default::default()
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        assert!(is_published(&fm, today));
+    }
+
+    #[test]
+    fn test_is_published_draft_and_future() {
+        let fm = crate::frontmatter::Frontmatter {
+            draft: true,
+            publish_date: Some(chrono::NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()),
+            ..Default::default()
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        assert!(!is_published(&fm, today));
     }
 
     // --- noindex and sitemap_exclude tests ---

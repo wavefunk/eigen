@@ -27,6 +27,22 @@ use crate::build::render::RenderedPage;
 use super::inject;
 use super::watcher::RebuildScope;
 
+/// Compute the status banner label for a page's frontmatter.
+///
+/// Returns an empty string if the page is neither draft nor scheduled.
+fn build_draft_label(fm: &crate::frontmatter::Frontmatter) -> String {
+    let today = chrono::Utc::now().date_naive();
+    let is_draft = fm.draft;
+    let is_scheduled = fm.publish_date.is_some_and(|d| d > today);
+
+    match (is_draft, is_scheduled) {
+        (true, true) => format!("DRAFT | SCHEDULED: {}", fm.publish_date.unwrap()),
+        (true, false) => "DRAFT".to_string(),
+        (false, true) => format!("SCHEDULED: {}", fm.publish_date.unwrap()),
+        (false, false) => String::new(),
+    }
+}
+
 /// Result of a dev rebuild: success, or an error with info about whether
 /// an error page was written to dist/ (and the browser should be reloaded
 /// to display it).
@@ -125,7 +141,10 @@ impl DevBuildState {
                 }
                 RebuildScope::StaticOnly => {
                     tracing::info!("Re-copying static assets...");
-                    crate::build::output::copy_static_assets(&self.project_root)?;
+                    let _ = crate::build::output::copy_static_assets(
+                        &self.project_root,
+                        &crate::config::ContentHashConfig::default(),
+                    )?;
                     tracing::info!("Static assets copied.");
                 }
             }
@@ -162,10 +181,19 @@ impl DevBuildState {
             config.build.fragments,
             &config.build.fragment_dir,
         )?;
-        crate::build::output::copy_static_assets(project_root)?;
+        let _ = crate::build::output::copy_static_assets(
+            project_root,
+            &crate::config::ContentHashConfig::default(),
+        )?;
 
         // Set up template engine (with plugin extensions).
-        let env = template::setup_environment(project_root, config, &pages, Some(&self.plugin_registry))?;
+        let env = template::setup_environment(
+            project_root,
+            config,
+            &pages,
+            Some(&self.plugin_registry),
+            None, // No content hashing in dev mode.
+        )?;
 
         // Build timestamp.
         let build_time =
@@ -232,6 +260,25 @@ impl DevBuildState {
 
         // Run post-build plugin hooks.
         self.plugin_registry.post_build(&dist_dir, project_root)?;
+
+        // Run audit checks (dev mode only).
+        let audit_report = crate::build::audit::run_audit(
+            config,
+            &dist_dir,
+            &rendered_pages,
+        )?;
+        crate::build::audit::output::write_all(&audit_report, &dist_dir)?;
+        crate::build::audit::overlay::inject_badges(
+            &audit_report,
+            &dist_dir,
+            &rendered_pages,
+        )?;
+        if audit_report.summary.total > 0 {
+            tracing::info!(
+                "Audit: {} issue(s) found. See /_audit for details.",
+                audit_report.summary.total,
+            );
+        }
 
         tracing::info!("Dev build: {} page(s).", rendered_pages.len());
         Ok(())
@@ -319,6 +366,8 @@ fn render_static_page_dev(
         dist_dir,
     )?;
     let full_html = inject::inject_reload_script(&full_html);
+    let draft_label = build_draft_label(&page.frontmatter);
+    let full_html = inject::inject_status_banner(&full_html, &draft_label);
 
     let full_path = dist_dir.join(&output_path);
     if let Some(parent) = full_path.parent() {
@@ -360,6 +409,7 @@ fn render_static_page_dev(
         is_index,
         is_dynamic: false,
         sitemap_exclude: page.frontmatter.sitemap_exclude,
+        template_path: Some(page.template_path.display().to_string()),
     })
 }
 
@@ -543,6 +593,7 @@ fn render_dynamic_page_dev(
             is_index: false,
             is_dynamic: true,
             sitemap_exclude: page.frontmatter.sitemap_exclude,
+            template_path: Some(page.template_path.display().to_string()),
         });
     }
 

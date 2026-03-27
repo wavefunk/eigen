@@ -7,6 +7,7 @@
 //! - `_data/nav.yaml`           → key `"nav"`
 //! - `_data/footer/links.yaml`  → key `"footer_links"`
 
+use crate::config::interpolate_env_vars;
 use eyre::{Result, WrapErr};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -43,6 +44,8 @@ pub fn load_global_data(project_root: &Path) -> Result<HashMap<String, Value>> {
             "yaml" | "yml" => {
                 let content = std::fs::read_to_string(path)
                     .wrap_err_with(|| format!("Failed to read {}", path.display()))?;
+                let content = interpolate_env_vars(&content)
+                    .wrap_err_with(|| format!("Failed to interpolate env vars in {}", path.display()))?;
                 let v: Value = serde_yaml::from_str(&content)
                     .wrap_err_with(|| format!("Failed to parse YAML in {}", path.display()))?;
                 v
@@ -50,6 +53,8 @@ pub fn load_global_data(project_root: &Path) -> Result<HashMap<String, Value>> {
             "json" => {
                 let content = std::fs::read_to_string(path)
                     .wrap_err_with(|| format!("Failed to read {}", path.display()))?;
+                let content = interpolate_env_vars(&content)
+                    .wrap_err_with(|| format!("Failed to interpolate env vars in {}", path.display()))?;
                 let v: Value = serde_json::from_str(&content)
                     .wrap_err_with(|| format!("Failed to parse JSON in {}", path.display()))?;
                 v

@@ -7,12 +7,15 @@
 //! - Strict undefined behavior (error on undefined var)
 //! - Custom filters and functions registered
 
-use eyre::{Result, WrapErr};
-use minijinja::Environment;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+
+use eyre::{Result, WrapErr};
+use minijinja::Environment;
 use walkdir::WalkDir;
 
+use crate::build::content_hash::AssetManifest;
 use crate::config::SiteConfig;
 use crate::discovery::PageDef;
 use crate::plugins::registry::PluginRegistry;
@@ -33,6 +36,7 @@ pub fn setup_environment(
     config: &SiteConfig,
     pages: &[PageDef],
     plugin_registry: Option<&PluginRegistry>,
+    manifest: Option<Arc<AssetManifest>>,
 ) -> Result<Environment<'static>> {
     let mut env = Environment::new();
 
@@ -86,7 +90,7 @@ pub fn setup_environment(
     filters::register_filters(&mut env, config);
 
     // 5. Register custom functions.
-    functions::register_functions(&mut env, config);
+    functions::register_functions(&mut env, config, manifest);
 
     // 6. Let plugins register their own filters/functions/globals.
     if let Some(registry) = plugin_registry {
@@ -161,7 +165,7 @@ fn collect_underscore_templates(templates_dir: &Path) -> Result<Vec<(String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BuildConfig, SiteMeta};
+    use crate::config::{BuildConfig, SiteSchemaConfig, SiteMeta, SiteSeoConfig};
     use crate::discovery::{PageDef, PageType};
     use crate::frontmatter::Frontmatter;
     use std::path::PathBuf;
@@ -173,6 +177,9 @@ mod tests {
             site: SiteMeta {
                 name: "Test".into(),
                 base_url: "https://test.com".into(),
+                seo: SiteSeoConfig::default(),
+                schema: SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: BuildConfig {
                 fragments: false,
@@ -184,6 +191,9 @@ mod tests {
             sources: HashMap::new(),
             analytics: None,
             plugins: HashMap::new(),
+            feed: HashMap::new(),
+            robots: None,
+            audit: None,
         }
     }
 
@@ -232,7 +242,7 @@ mod tests {
             template_body: r#"{% extends "_base.html" %}{% block content %}<h1>Hi</h1>{% endblock %}"#.into(),
         }];
 
-        let env = setup_environment(root, &config, &pages, None).unwrap();
+        let env = setup_environment(root, &config, &pages, None, None).unwrap();
 
         // Verify template is registered and can render.
         let tmpl = env.get_template("index.html").unwrap();
@@ -260,7 +270,7 @@ mod tests {
             template_body: "<h1>{{ undefined_var }}</h1>".into(),
         }];
 
-        let env = setup_environment(root, &config, &pages, None).unwrap();
+        let env = setup_environment(root, &config, &pages, None, None).unwrap();
         let tmpl = env.get_template("test.html").unwrap();
         let result = tmpl.render(minijinja::context! {});
         assert!(result.is_err());
@@ -305,7 +315,7 @@ mod tests {
             template_body: "{{ plugin_hello() }}".into(),
         }];
 
-        let env = setup_environment(root, &config, &pages, Some(&registry)).unwrap();
+        let env = setup_environment(root, &config, &pages, Some(&registry), None).unwrap();
         let tmpl = env.get_template("test.html").unwrap();
         let result = tmpl.render(minijinja::context! {}).unwrap();
         assert_eq!(result, "hello from plugin");
@@ -328,7 +338,7 @@ mod tests {
         }];
 
         // Passing None for plugin_registry should work fine.
-        let env = setup_environment(root, &config, &pages, None).unwrap();
+        let env = setup_environment(root, &config, &pages, None, None).unwrap();
         let tmpl = env.get_template("test.html").unwrap();
         let result = tmpl.render(minijinja::context! {}).unwrap();
         assert_eq!(result, "<h1>No plugins</h1>");

@@ -204,7 +204,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    use crate::config::{BuildConfig, SiteMeta, SourceConfig};
+    use crate::config::{BuildConfig, SiteSchemaConfig, SiteMeta, SiteSeoConfig, SourceConfig};
 
     /// Create a minimal SiteConfig for testing.
     fn test_config() -> SiteConfig {
@@ -220,6 +220,9 @@ mod tests {
             site: SiteMeta {
                 name: "Test".into(),
                 base_url: "https://test.com".into(),
+                seo: SiteSeoConfig::default(),
+                schema: SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: BuildConfig::default(),
             sitemap: Default::default(),
@@ -228,6 +231,9 @@ mod tests {
             sources,
             analytics: None,
             plugins: HashMap::new(),
+            feed: HashMap::new(),
+            robots: None,
+            audit: None,
         }
     }
 

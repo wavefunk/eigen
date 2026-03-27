@@ -38,13 +38,18 @@ pub fn setup_output_dir(project_root: &Path, fragments_enabled: bool, fragment_d
 ///
 /// Preserves directory structure: `static/css/style.css` → `dist/css/style.css`.
 /// If `static/` does not exist, this is a no-op.
-/// `robots.txt` is always skipped here — the robots module handles it.
-pub fn copy_static_assets(project_root: &Path) -> Result<()> {
+///
+/// When content hashing is enabled, files are renamed with content-based
+/// hashes and the mapping is returned in the `AssetManifest`.
+pub fn copy_static_assets(
+    project_root: &Path,
+    content_hash_config: &crate::config::ContentHashConfig,
+) -> Result<crate::build::content_hash::AssetManifest> {
     let static_dir = project_root.join("static");
     let dist_dir = project_root.join("dist");
 
     if !static_dir.is_dir() {
-        return Ok(());
+        return Ok(crate::build::content_hash::AssetManifest::new());
     }
 
     for entry in WalkDir::new(&static_dir).into_iter() {
@@ -75,7 +80,12 @@ pub fn copy_static_assets(project_root: &Path) -> Result<()> {
         }
     }
 
-    Ok(())
+    // Phase 1: Build content hash manifest if enabled.
+    if content_hash_config.enabled {
+        crate::build::content_hash::build_manifest(&dist_dir, &static_dir, content_hash_config)
+    } else {
+        Ok(crate::build::content_hash::AssetManifest::new())
+    }
 }
 
 #[cfg(test)]
@@ -148,7 +158,7 @@ mod tests {
         // Create dist/.
         fs::create_dir_all(root.join("dist")).unwrap();
 
-        copy_static_assets(root).unwrap();
+        copy_static_assets(root, &crate::config::ContentHashConfig::default()).unwrap();
 
         assert!(root.join("dist/css/style.css").exists());
         assert!(root.join("dist/js/app.js").exists());
@@ -165,7 +175,7 @@ mod tests {
         fs::create_dir_all(root.join("dist")).unwrap();
 
         // Should be a no-op, not an error.
-        copy_static_assets(root).unwrap();
+        copy_static_assets(root, &crate::config::ContentHashConfig::default()).unwrap();
     }
 
     #[test]
@@ -176,7 +186,7 @@ mod tests {
         write(root, "static/a/b/c/deep.txt", "deep");
         fs::create_dir_all(root.join("dist")).unwrap();
 
-        copy_static_assets(root).unwrap();
+        copy_static_assets(root, &crate::config::ContentHashConfig::default()).unwrap();
 
         assert!(root.join("dist/a/b/c/deep.txt").exists());
         let content = fs::read_to_string(root.join("dist/a/b/c/deep.txt")).unwrap();

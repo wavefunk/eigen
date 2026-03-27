@@ -1,6 +1,6 @@
 use eyre::{Result, WrapErr, bail};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -35,7 +35,7 @@ pub struct SiteConfig {
 }
 
 /// Metadata about the site itself.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SiteMeta {
     pub name: String,
     pub base_url: String,
@@ -45,6 +45,9 @@ pub struct SiteMeta {
     /// Site-level structured data (JSON-LD) defaults.
     #[serde(default)]
     pub schema: SiteSchemaConfig,
+    /// Arbitrary extra fields from `[site]` — exposed to templates as `site.*`.
+    #[serde(flatten)]
+    pub extra: HashMap<String, toml::Value>,
 }
 
 /// Build-related configuration.
@@ -551,7 +554,7 @@ fn default_robots_rules() -> Vec<RobotsRule> {
 ///
 /// Located under `[site.seo]` in site.toml. These provide fallback
 /// values for pages that do not set explicit `[seo]` in frontmatter.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SiteSeoConfig {
     /// Default page title for `og:title` / `twitter:title`.
     /// Falls back to `site.name` if not set.
@@ -606,7 +609,7 @@ impl Default for SiteSeoConfig {
 /// Site-level structured data (JSON-LD) defaults.
 ///
 /// Located under `[site.schema]` in site.toml.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SiteSchemaConfig {
     /// Default author name for Article schemas.
     /// Used when a page does not specify an author in frontmatter.
@@ -658,7 +661,7 @@ pub fn load_config(project_root: &Path) -> Result<SiteConfig> {
 /// Replace all `${VAR_NAME}` occurrences in `input` with the value of the
 /// corresponding environment variable. Returns an error if any referenced
 /// variable is not set.
-fn interpolate_env_vars(input: &str) -> Result<String> {
+pub fn interpolate_env_vars(input: &str) -> Result<String> {
     let re = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
     let mut result = input.to_string();
     let mut errors: Vec<String> = Vec::new();
@@ -686,7 +689,7 @@ fn interpolate_env_vars(input: &str) -> Result<String> {
 
     if !errors.is_empty() {
         bail!(
-            "Missing environment variable(s) referenced in site.toml: {}",
+            "Missing environment variable(s): {}",
             errors.join(", ")
         );
     }

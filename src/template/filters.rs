@@ -251,6 +251,7 @@ mod tests {
                 base_url: "https://example.com".into(),
                 seo: crate::config::SiteSeoConfig::default(),
                 schema: crate::config::SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: crate::config::BuildConfig::default(),
             assets: Default::default(),

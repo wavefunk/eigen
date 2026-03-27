@@ -83,6 +83,7 @@ mod tests {
                 base_url: "https://example.com".into(),
                 seo: SiteSeoConfig::default(),
                 schema: SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: BuildConfig::default(),
             assets: Default::default(),

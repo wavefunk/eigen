@@ -179,6 +179,7 @@ mod tests {
                 base_url: "https://test.com".into(),
                 seo: SiteSeoConfig::default(),
                 schema: SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: BuildConfig {
                 fragments: false,

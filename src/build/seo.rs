@@ -430,6 +430,7 @@ mod tests {
             base_url: base_url.to_string(),
             seo: SiteSeoConfig::default(),
             schema: SiteSchemaConfig::default(),
+            extra: std::collections::HashMap::new(),
         }
     }
 
@@ -444,6 +445,7 @@ mod tests {
             base_url: base_url.to_string(),
             seo,
             schema: SiteSchemaConfig::default(),
+            extra: std::collections::HashMap::new(),
         }
     }
 

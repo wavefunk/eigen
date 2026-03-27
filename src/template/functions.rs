@@ -72,15 +72,10 @@ pub fn register_functions(
         }
     });
 
-    // site — expose the full site config as a global variable.
-    let site_name = config.site.name.clone();
-    let site_base_url = config.site.base_url.clone();
+    // site — expose the full [site] config as a global variable.
     env.add_global(
         "site",
-        Value::from_iter([
-            ("name", Value::from(site_name)),
-            ("base_url", Value::from(site_base_url)),
-        ]),
+        Value::from_serialize(&config.site),
     );
 }
 
@@ -121,6 +116,7 @@ mod tests {
                 base_url: "https://example.com".into(),
                 seo: SiteSeoConfig::default(),
                 schema: SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: BuildConfig {
                 fragments: true,
@@ -144,6 +140,7 @@ mod tests {
                 base_url: "https://example.com".into(),
                 seo: SiteSeoConfig::default(),
                 schema: SiteSchemaConfig::default(),
+                extra: std::collections::HashMap::new(),
             },
             build: BuildConfig {
                 fragments: false,
